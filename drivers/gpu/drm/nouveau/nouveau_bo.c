@@ -1084,13 +1084,13 @@ static void nouveau_bo_move_ntfy(struct ttm_buffer_object *bo,
 		}
 		nouveau_uvmm_bo_map_all(nvbo, mem);
 	} else {
-		list_for_each_entry(vma, &nvbo->vma_list, head) {
-			ret = dma_resv_wait_timeout(bo->base.resv,
-						    DMA_RESV_USAGE_BOOKKEEP,
-						    false, 15 * HZ);
-			WARN_ON(ret <= 0);
+		ret = dma_resv_wait_timeout(bo->base.resv,
+					    DMA_RESV_USAGE_BOOKKEEP,
+					    false, 15 * HZ);
+		WARN_ON(ret <= 0);
+
+		list_for_each_entry(vma, &nvbo->vma_list, head)
 			nouveau_vma_unmap(vma);
-		}
 		nouveau_uvmm_bo_unmap_all(nvbo);
 	}
 
