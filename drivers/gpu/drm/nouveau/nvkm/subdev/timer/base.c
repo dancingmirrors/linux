@@ -27,7 +27,12 @@ s64
 nvkm_timer_wait_test(struct nvkm_timer_wait *wait)
 {
 	struct nvkm_subdev *subdev = &wait->tmr->subdev;
-	u64 time = nvkm_timer_read(wait->tmr);
+	u64 time;
+
+	if (wait->dead)
+		return -ETIMEDOUT;
+
+	time = nvkm_timer_read(wait->tmr);
 
 	if (wait->reads == 0) {
 		wait->time0 = time;
@@ -37,6 +42,8 @@ nvkm_timer_wait_test(struct nvkm_timer_wait *wait)
 	if (wait->time1 == time) {
 		if (wait->reads++ == 16) {
 			nvkm_fatal(subdev, "stalled at %016llx\n", time);
+			if (time == ~0ULL)
+				wait->tmr->dead = true;
 			return -ETIMEDOUT;
 		}
 	} else {
@@ -57,6 +64,7 @@ nvkm_timer_wait_init(struct nvkm_device *device, u64 nsec,
 	wait->tmr = device->timer;
 	wait->limit = nsec;
 	wait->reads = 0;
+	wait->dead = wait->tmr && wait->tmr->dead;
 }
 
 u64
@@ -160,6 +168,7 @@ static int
 nvkm_timer_init(struct nvkm_subdev *subdev)
 {
 	struct nvkm_timer *tmr = nvkm_timer(subdev);
+	tmr->dead = false;
 	if (tmr->func->init)
 		tmr->func->init(tmr);
 	tmr->func->time(tmr, ktime_to_ns(ktime_get()));

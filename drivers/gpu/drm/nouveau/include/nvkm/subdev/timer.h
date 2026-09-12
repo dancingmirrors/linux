@@ -23,6 +23,8 @@ struct nvkm_timer {
 
 	struct list_head alarms;
 	spinlock_t lock;
+
+	bool dead;
 };
 
 u64 nvkm_timer_read(struct nvkm_timer *);
@@ -34,6 +36,7 @@ struct nvkm_timer_wait {
 	u64 time0;
 	u64 time1;
 	int reads;
+	bool dead;
 };
 
 void nvkm_timer_wait_init(struct nvkm_device *, u64 nsec,
@@ -59,7 +62,7 @@ s64 nvkm_timer_wait_test(struct nvkm_timer_wait *);
 		cond                                                           \
 	} while ((_taken = nvkm_timer_wait_test(&_wait)) >= 0);                \
                                                                                \
-	if (_warn && _taken < 0)                                               \
+	if (_warn && _taken < 0 && !_wait.dead)                                \
 		dev_WARN(_wait.tmr->subdev.device->dev, "timeout\n");          \
 	_taken;                                                                \
 })
