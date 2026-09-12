@@ -61,10 +61,16 @@ r535_gsp_intr(struct nvkm_inth *inth)
 {
 	struct nvkm_gsp *gsp = container_of(inth, typeof(*gsp), subdev.inth);
 	struct nvkm_subdev *subdev = &gsp->subdev;
-	u32 intr = nvkm_falcon_rd32(&gsp->falcon, 0x0008);
-	u32 inte = nvkm_falcon_rd32(&gsp->falcon, gsp->falcon.func->addr2 +
-						  gsp->falcon.func->riscv_irqmask);
+	struct nvkm_falcon *falcon = &gsp->falcon;
+	u32 intr = nvkm_falcon_rd32(falcon, 0x0008);
+	u32 inte = nvkm_falcon_rd32(falcon, falcon->func->addr2 +
+					    falcon->func->riscv_irqmask);
+	u32 dest = ~0;
 	u32 stat = intr & inte;
+
+	if (falcon->func->riscv_irqdest)
+		dest = nvkm_falcon_rd32(falcon, falcon->func->addr2 +
+						falcon->func->riscv_irqdest);
 
 	if (!stat) {
 		nvkm_debug(subdev, "inte %08x %08x\n", intr, inte);
@@ -72,18 +78,23 @@ r535_gsp_intr(struct nvkm_inth *inth)
 	}
 
 	if (stat & 0x00000040) {
-		nvkm_falcon_wr32(&gsp->falcon, 0x004, 0x00000040);
+		nvkm_falcon_wr32(falcon, 0x004, 0x00000040);
 		schedule_work(&gsp->msgq.work);
 		stat &= ~0x00000040;
 	}
 
-	if (stat) {
-		nvkm_error(subdev, "intr %08x\n", stat);
-		nvkm_falcon_wr32(&gsp->falcon, 0x014, stat);
-		nvkm_falcon_wr32(&gsp->falcon, 0x004, stat);
+	if (stat & ~dest) {
+		nvkm_debug(subdev, "intr %08x not routed to host\n", stat & ~dest);
+		stat &= dest;
 	}
 
-	nvkm_falcon_intr_retrigger(&gsp->falcon);
+	if (stat) {
+		nvkm_error(subdev, "intr %08x\n", stat);
+		nvkm_falcon_wr32(falcon, 0x014, stat);
+		nvkm_falcon_wr32(falcon, 0x004, stat);
+	}
+
+	nvkm_falcon_intr_retrigger(falcon);
 	return IRQ_HANDLED;
 }
 
