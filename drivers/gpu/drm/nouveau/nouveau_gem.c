@@ -304,12 +304,23 @@ nouveau_gem_info(struct drm_file *file_priv, struct drm_gem_object *gem,
 	struct nouveau_vmm *vmm = nouveau_cli_vmm(cli);
 	struct nouveau_vma *vma;
 
-	if (is_power_of_2(nvbo->valid_domains))
+	if (is_power_of_2(nvbo->valid_domains)) {
 		rep->domain = nvbo->valid_domains;
-	else if (nvbo->bo.resource->mem_type == TTM_PL_TT)
-		rep->domain = NOUVEAU_GEM_DOMAIN_GART;
-	else
-		rep->domain = NOUVEAU_GEM_DOMAIN_VRAM;
+	} else {
+		int ret;
+
+		ret = ttm_bo_reserve(&nvbo->bo, false, false, NULL);
+		if (ret)
+			return ret;
+
+		if (nvbo->bo.resource &&
+		    nvbo->bo.resource->mem_type == TTM_PL_TT)
+			rep->domain = NOUVEAU_GEM_DOMAIN_GART;
+		else
+			rep->domain = NOUVEAU_GEM_DOMAIN_VRAM;
+
+		ttm_bo_unreserve(&nvbo->bo);
+	}
 	rep->offset = nvbo->offset;
 	if (vmm->vmm.object.oclass >= NVIF_CLASS_VMM_NV50 &&
 	    !nouveau_cli_uvmm(cli)) {
