@@ -46,6 +46,7 @@
 
 #define LRC_PPHWSP_SIZE				SZ_4K
 #define LRC_INDIRECT_CTX_BO_SIZE		SZ_4K
+#define XE_GEN12_CTX_INDIRECT_CTX_OFFSET	0xd
 #define LRC_INDIRECT_RING_STATE_SIZE		SZ_4K
 
 #define LRC_PRIORITY				GENMASK_ULL(10, 9)
@@ -1449,10 +1450,10 @@ setup_indirect_ctx(struct xe_lrc *lrc, struct xe_hw_engine *hwe)
 	finish_bo(&state);
 	kfree(state.buffer);
 
-	/*
-	 * Enable INDIRECT_CTX leaving INDIRECT_CTX_OFFSET at its default: it
-	 * varies per engine class, but the default is good enough
-	 */
+	if (GRAPHICS_VER(gt_to_xe(lrc->gt)) < 20)
+		xe_lrc_write_ctx_reg(lrc, CTX_CS_INDIRECT_CTX_OFFSET,
+				     XE_GEN12_CTX_INDIRECT_CTX_OFFSET << 6);
+
 	xe_lrc_write_ctx_reg(lrc,
 			     CTX_CS_INDIRECT_CTX,
 			     (xe_bo_ggtt_addr(lrc->bo) + state.offset) |
