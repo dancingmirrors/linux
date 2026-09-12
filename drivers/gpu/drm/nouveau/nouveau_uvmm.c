@@ -480,9 +480,11 @@ select_page_shift(struct nouveau_uvmm *uvmm, struct drm_gpuva_op_map *op)
 	if (op_map_aligned_to_page_shift(op, nvbo->page))
 		return nvbo->page;
 
-	struct nouveau_mem *mem = nouveau_mem(nvbo->bo.resource);
 	struct nvif_vmm *vmm = &uvmm->vmm.vmm;
+	u8 mem_type;
 	int i;
+
+	mem_type = NVIF_MEM_VRAM | NVIF_MEM_HOST;
 
 	/* If the given granularity doesn't fit, let's find one that will fit. */
 	for (i = 0; i < vmm->page_nr; i++) {
@@ -491,9 +493,9 @@ select_page_shift(struct nouveau_uvmm *uvmm, struct drm_gpuva_op_map *op)
 			continue;
 
 		/* Skip incompatible domains. */
-		if ((mem->mem.type & NVIF_MEM_VRAM) && !vmm->page[i].vram)
+		if ((mem_type & NVIF_MEM_VRAM) && !vmm->page[i].vram)
 			continue;
-		if ((mem->mem.type & NVIF_MEM_HOST) &&
+		if ((mem_type & NVIF_MEM_HOST) &&
 		    (!vmm->page[i].host || vmm->page[i].shift > PAGE_SHIFT))
 			continue;
 
