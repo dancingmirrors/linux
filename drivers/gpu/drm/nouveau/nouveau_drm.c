@@ -1157,12 +1157,16 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 
 	nouveau_switcheroo_optimus_dsm();
 	ret = nouveau_do_suspend(drm, true);
+	if (ret)
+		return ret;
+
 	pci_save_state(pdev);
 	pci_disable_device(pdev);
 	pci_ignore_hotplug(pdev);
 	pci_set_power_state(pdev, PCI_D3cold);
 	drm->dev->switch_power_state = DRM_SWITCH_POWER_DYNAMIC_OFF;
-	return ret;
+
+	return 0;
 }
 
 static int
