@@ -986,18 +986,57 @@ nouveau_uvmm_sm_map(struct nouveau_uvmm *uvmm,
 	return nouveau_uvmm_sm(uvmm, new, ops);
 }
 
+static void
+nouveau_uvmm_sm_unmap_put(struct nouveau_uvmm *uvmm, struct drm_gpuva_ops *ops)
+{
+	struct drm_gpuva_op *op;
+
+	drm_gpuva_for_each_op(op, ops) {
+		switch (op->op) {
+		case DRM_GPUVA_OP_REMAP: {
+			struct drm_gpuva_op_remap *r = &op->remap;
+			struct drm_gpuva_op_map *p = r->prev;
+			struct drm_gpuva_op_map *n = r->next;
+			struct drm_gpuva *va = r->unmap->va;
+			u64 addr = va->va.addr;
+			u64 end = addr + va->va.range;
+
+			if (p)
+				addr = p->va.addr + p->va.range;
+
+			if (n)
+				end = n->va.addr;
+
+			nouveau_uvmm_vmm_put(uvmm, addr, end - addr,
+					     uvma_from_va(va)->page_shift);
+			break;
+		}
+		case DRM_GPUVA_OP_UNMAP:
+			nouveau_uvma_vmm_put(uvma_from_va(op->unmap.va));
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 static int
 nouveau_uvmm_sm_unmap(struct nouveau_uvmm *uvmm,
 		      struct nouveau_uvma_prealloc *new,
 		      struct drm_gpuva_ops *ops)
 {
-	return nouveau_uvmm_sm(uvmm, new, ops);
+	int ret = nouveau_uvmm_sm(uvmm, new, ops);
+
+	if (!ret)
+		nouveau_uvmm_sm_unmap_put(uvmm, ops);
+
+	return ret;
 }
 
 static void
 nouveau_uvmm_sm_cleanup(struct nouveau_uvmm *uvmm,
 			struct nouveau_uvma_prealloc *new,
-			struct drm_gpuva_ops *ops, bool unmap)
+			struct drm_gpuva_ops *ops)
 {
 	struct drm_gpuva_op *op;
 
@@ -1006,37 +1045,15 @@ nouveau_uvmm_sm_cleanup(struct nouveau_uvmm *uvmm,
 		case DRM_GPUVA_OP_MAP:
 			break;
 		case DRM_GPUVA_OP_REMAP: {
-			struct drm_gpuva_op_remap *r = &op->remap;
-			struct drm_gpuva_op_map *p = r->prev;
-			struct drm_gpuva_op_map *n = r->next;
-			struct drm_gpuva *va = r->unmap->va;
+			struct drm_gpuva *va = op->remap.unmap->va;
 			struct nouveau_uvma *uvma = uvma_from_va(va);
-			u8 page_shift = uvma->page_shift;
-
-			if (unmap) {
-				u64 addr = va->va.addr;
-				u64 end = addr + va->va.range;
-
-				if (p)
-					addr = p->va.addr + p->va.range;
-
-				if (n)
-					end = n->va.addr;
-
-				nouveau_uvmm_vmm_put(uvmm, addr, end - addr, page_shift);
-			}
 
 			nouveau_uvma_gem_put(uvma);
 			nouveau_uvma_free(uvma);
 			break;
 		}
 		case DRM_GPUVA_OP_UNMAP: {
-			struct drm_gpuva_op_unmap *u = &op->unmap;
-			struct drm_gpuva *va = u->va;
-			struct nouveau_uvma *uvma = uvma_from_va(va);
-
-			if (unmap)
-				nouveau_uvma_vmm_put(uvma);
+			struct nouveau_uvma *uvma = uvma_from_va(op->unmap.va);
 
 			nouveau_uvma_gem_put(uvma);
 			nouveau_uvma_free(uvma);
@@ -1046,22 +1063,6 @@ nouveau_uvmm_sm_cleanup(struct nouveau_uvmm *uvmm,
 			break;
 		}
 	}
-}
-
-static void
-nouveau_uvmm_sm_map_cleanup(struct nouveau_uvmm *uvmm,
-			    struct nouveau_uvma_prealloc *new,
-			    struct drm_gpuva_ops *ops)
-{
-	nouveau_uvmm_sm_cleanup(uvmm, new, ops, false);
-}
-
-static void
-nouveau_uvmm_sm_unmap_cleanup(struct nouveau_uvmm *uvmm,
-			      struct nouveau_uvma_prealloc *new,
-			      struct drm_gpuva_ops *ops)
-{
-	nouveau_uvmm_sm_cleanup(uvmm, new, ops, true);
 }
 
 static int
@@ -1627,8 +1628,7 @@ nouveau_uvmm_bind_job_cleanup(struct nouveau_job *job)
 			break;
 		case OP_UNMAP_SPARSE:
 			if (!IS_ERR_OR_NULL(op->ops))
-				nouveau_uvmm_sm_unmap_cleanup(uvmm, &op->new,
-							      op->ops);
+				nouveau_uvmm_sm_cleanup(uvmm, &op->new, op->ops);
 
 			if (op->reg) {
 				nouveau_uvma_region_sparse_unref(op->reg);
@@ -1642,13 +1642,11 @@ nouveau_uvmm_bind_job_cleanup(struct nouveau_job *job)
 			break;
 		case OP_MAP:
 			if (!IS_ERR_OR_NULL(op->ops))
-				nouveau_uvmm_sm_map_cleanup(uvmm, &op->new,
-							    op->ops);
+				nouveau_uvmm_sm_cleanup(uvmm, &op->new, op->ops);
 			break;
 		case OP_UNMAP:
 			if (!IS_ERR_OR_NULL(op->ops))
-				nouveau_uvmm_sm_unmap_cleanup(uvmm, &op->new,
-							      op->ops);
+				nouveau_uvmm_sm_cleanup(uvmm, &op->new, op->ops);
 			break;
 		}
 
