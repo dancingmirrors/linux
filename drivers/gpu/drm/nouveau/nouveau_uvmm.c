@@ -85,6 +85,7 @@ struct uvmm_map_args {
 	u64 addr;
 	u64 range;
 	u8 kind;
+	u8 page_shift;
 };
 
 static int
@@ -657,7 +658,17 @@ op_map_prepare(struct nouveau_uvmm *uvmm,
 
 	uvma->region = args->region;
 	uvma->kind = args->kind;
-	uvma->page_shift = select_page_shift(uvmm, op);
+	uvma->page_shift = args->page_shift ? args->page_shift :
+			   select_page_shift(uvmm, op);
+
+	if (!op_map_aligned_to_page_shift(op, uvma->page_shift)) {
+		NV_DEBUG(uvmm->vmm.cli->drm,
+			 "map %016llx-%016llx bo_offset %016llx not aligned to page shift %u\n",
+			 op->va.addr, op->va.addr + op->va.range,
+			 op->gem.offset, uvma->page_shift);
+		nouveau_uvma_free(uvma);
+		return -EINVAL;
+	}
 
 	drm_gpuva_map(&uvmm->base, &uvma->va, op);
 
@@ -686,6 +697,7 @@ nouveau_uvmm_sm_prepare(struct nouveau_uvmm *uvmm,
 	struct drm_gpuva_op *op;
 	u64 vmm_get_start = args ? args->addr : 0;
 	u64 vmm_get_end = args ? args->addr + args->range : 0;
+	u8 inherit_shift = 0;
 	int ret;
 
 	drm_gpuva_for_each_op(op, ops) {
@@ -696,6 +708,16 @@ nouveau_uvmm_sm_prepare(struct nouveau_uvmm *uvmm,
 			ret = op_map_prepare(uvmm, &new->map, &op->map, args);
 			if (ret)
 				goto unwind;
+
+			if (inherit_shift &&
+			    inherit_shift != new->map->page_shift) {
+				NV_DEBUG(uvmm->vmm.cli->drm,
+					 "map page shift %d != inherited %d\n",
+					 new->map->page_shift, inherit_shift);
+				op_map_prepare_unwind(new->map);
+				ret = -EINVAL;
+				goto unwind;
+			}
 
 			if (vmm_get_range) {
 				ret = nouveau_uvmm_vmm_get(uvmm, vmm_get_start,
@@ -712,25 +734,49 @@ nouveau_uvmm_sm_prepare(struct nouveau_uvmm *uvmm,
 		case DRM_GPUVA_OP_REMAP: {
 			struct drm_gpuva_op_remap *r = &op->remap;
 			struct drm_gpuva *va = r->unmap->va;
+			u8 page_shift = uvma_from_va(va)->page_shift;
 			struct uvmm_map_args remap_args = {
 				.kind = uvma_from_va(va)->kind,
 				.region = uvma_from_va(va)->region,
+				.page_shift = page_shift,
 			};
 			u64 ustart = va->va.addr;
 			u64 urange = va->va.range;
 			u64 uend = ustart + urange;
+			u64 hstart = r->prev ? r->prev->va.addr +
+					       r->prev->va.range : ustart;
+			u64 hend = r->next ? r->next->va.addr : uend;
+
+			if (!IS_ALIGNED(hstart, 1ULL << page_shift) ||
+			    !IS_ALIGNED(hend, 1ULL << page_shift)) {
+				NV_DEBUG(uvmm->vmm.cli->drm,
+					 "REMAP hole %016llx-%016llx not aligned to page shift %d\n",
+					 hstart, hend, page_shift);
+				ret = -EINVAL;
+				goto unwind;
+			}
+
+			if (args && inherit_shift && inherit_shift != page_shift) {
+				ret = -EINVAL;
+				goto unwind;
+			}
 
 			op_unmap_prepare(r->unmap);
 
 			if (r->prev) {
 				ret = op_map_prepare(uvmm, &new->prev, r->prev,
 						     &remap_args);
-				if (ret)
+				if (ret) {
+					op_unmap_prepare_unwind(va);
 					goto unwind;
+				}
 
 				if (args)
 					vmm_get_start = uend;
 			}
+
+			if (args)
+				inherit_shift = page_shift;
 
 			if (r->next) {
 				ret = op_map_prepare(uvmm, &new->next, r->next,
@@ -738,6 +784,7 @@ nouveau_uvmm_sm_prepare(struct nouveau_uvmm *uvmm,
 				if (ret) {
 					if (r->prev)
 						op_map_prepare_unwind(new->prev);
+					op_unmap_prepare_unwind(va);
 					goto unwind;
 				}
 
@@ -758,10 +805,17 @@ nouveau_uvmm_sm_prepare(struct nouveau_uvmm *uvmm,
 			u64 uend = ustart + urange;
 			u8 page_shift = uvma_from_va(va)->page_shift;
 
+			if (args && inherit_shift && inherit_shift != page_shift) {
+				ret = -EINVAL;
+				goto unwind;
+			}
+
 			op_unmap_prepare(u);
 
 			if (!args)
 				break;
+
+			inherit_shift = page_shift;
 
 			/* Nothing to do for mappings we merge with. */
 			if (uend == vmm_get_start ||
