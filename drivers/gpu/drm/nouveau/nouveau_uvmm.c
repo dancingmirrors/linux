@@ -1027,8 +1027,7 @@ nouveau_uvmm_sm_unmap(struct nouveau_uvmm *uvmm,
 {
 	int ret = nouveau_uvmm_sm(uvmm, new, ops);
 
-	if (!ret)
-		nouveau_uvmm_sm_unmap_put(uvmm, ops);
+	nouveau_uvmm_sm_unmap_put(uvmm, ops);
 
 	return ret;
 }
