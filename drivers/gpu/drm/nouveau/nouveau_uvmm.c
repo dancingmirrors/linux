@@ -1141,7 +1141,7 @@ bind_validate_op(struct nouveau_job *job,
 }
 
 static void
-bind_validate_map_sparse(struct nouveau_job *job, u64 addr, u64 range)
+bind_wait_overlapping_unmaps(struct nouveau_job *job, u64 addr, u64 range)
 {
 	struct nouveau_sched *sched = job->sched;
 	struct nouveau_job *__job;
@@ -1230,9 +1230,10 @@ bind_validate_region(struct nouveau_job *job)
 		switch (op->op) {
 		case OP_MAP_SPARSE:
 			sparse = true;
-			bind_validate_map_sparse(job, op_addr, op_range);
 			fallthrough;
 		case OP_MAP:
+			bind_wait_overlapping_unmaps(job, op_addr, op_range);
+
 			ret = bind_validate_map_common(job, op_addr, op_range,
 						       sparse);
 			if (ret)
