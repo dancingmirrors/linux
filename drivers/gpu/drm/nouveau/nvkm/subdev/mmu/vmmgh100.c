@@ -243,6 +243,9 @@ gh100_vmm_valid(struct nvkm_vmm *vmm, bool ro, bool priv, u8 kind, u8 comp,
 		return -EINVAL;
 	}
 
+	if (kindm[kind] != kind)
+		kind = kindm[kind];
+
 	if (priv) {
 		if (ro) {
 			if (vol)
