@@ -420,6 +420,9 @@ static void __emit_job_gen12_video(struct xe_sched_job *job, struct xe_lrc *lrc,
 		i = emit_store_imm_ggtt(xe_lrc_start_seqno_ggtt_addr(lrc),
 					seqno, dw, i);
 
+	/* See __emit_job_gen12_render_compute() */
+	dw[i++] = MI_ARB_ON_OFF | MI_ARB_ENABLE;
+
 	i = emit_bb_start(batch_addr, ppgtt_flag, dw, i);
 
 	/* Don't preempt fence signaling */
@@ -483,6 +486,14 @@ static void __emit_job_gen12_render_compute(struct xe_sched_job *job,
 
 	i = emit_store_imm_ggtt(xe_lrc_start_seqno_ggtt_addr(lrc),
 				seqno, dw, i);
+
+	/*
+	 * The first job on a freshly created context inherits its arbitration
+	 * state from the context image rather than from a previous job's
+	 * trailing MI_ARB_ON_OFF in emit_user_interrupt(). Enable it here so
+	 * the batch is always preemptible, as i915 does in gen8_emit_bb_start().
+	 */
+	dw[i++] = MI_ARB_ON_OFF | MI_ARB_ENABLE;
 
 	i = emit_bb_start(batch_addr, ppgtt_flag, dw, i);
 
