@@ -1937,9 +1937,16 @@ static int
 nouveau_uvmm_bo_validate(struct drm_gpuvm_bo *vm_bo, struct drm_exec *exec)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(vm_bo->obj);
+	int ret;
 
 	nouveau_bo_placement_set(nvbo, nvbo->valid_domains, 0);
-	return nouveau_bo_validate(nvbo, true, false);
+	ret = nouveau_bo_validate(nvbo, true, false);
+	if (ret)
+		return ret;
+
+	drm_gpuvm_bo_evict(vm_bo, false);
+
+	return 0;
 }
 
 static const struct drm_gpuvm_ops gpuvm_ops = {
