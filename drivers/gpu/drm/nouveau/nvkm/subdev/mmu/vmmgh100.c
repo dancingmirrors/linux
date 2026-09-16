@@ -5,6 +5,7 @@
 #include "vmm.h"
 
 #include <subdev/fb.h>
+#include <subdev/gsp.h>
 
 #include <nvhw/drf.h>
 #include <nvhw/ref/gh100/dev_mmu.h>
@@ -243,8 +244,25 @@ gh100_vmm_valid(struct nvkm_vmm *vmm, bool ro, bool priv, u8 kind, u8 comp,
 		return -EINVAL;
 	}
 
-	if (kindm[kind] != kind)
-		kind = kindm[kind];
+	if (kindm[kind] != kind) {
+		struct nvkm_gsp *gsp = vmm->mmu->subdev.device->gsp;
+
+		/* Compression only covers VRAM, and only at the page sizes the
+		 * page table descriptor says it does. Unlike gf100_vmm_valid()
+		 * we downgrade rather than fail the map: there are no comptags
+		 * to allocate here, so the mapping itself is still perfectly
+		 * valid without compression.
+		 */
+		if (aper != 0 || !(page->type & NVKM_VMM_PAGE_COMP)) {
+			VMM_DEBUG(vmm, "comp %d %02x", aper, page->type);
+			kind = kindm[kind];
+		} else if (gsp->fb.comp.disabled) {
+			kind = kindm[kind];
+		} else if (gsp->fb.comp.plc_disabled &&
+			   kind == NV_MMU_PTE_KIND_GENERIC_MEMORY_COMPRESSIBLE) {
+			kind = NV_MMU_PTE_KIND_GENERIC_MEMORY_COMPRESSIBLE_DISABLE_PLC;
+		}
+	}
 
 	if (priv) {
 		if (ro) {
