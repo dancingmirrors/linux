@@ -7,6 +7,7 @@
 
 #include <asm-generic/video.h>
 
+#include "nvrm/fb.h"
 #include "nvrm/gsp.h"
 #include "nvrm/rpcfn.h"
 #include "nvrm/msgfn.h"
@@ -82,6 +83,37 @@ r570_gsp_xlat_mc_engine_idx(u32 mc_engine_idx, enum nvkm_subdev_type *ptype, int
 	}
 }
 
+static void
+r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
+{
+	NV2080_CTRL_INTERNAL_MEMSYS_GET_STATIC_CONFIG_PARAMS *ctrl;
+
+	gsp->fb.comp.disabled = true;
+
+	ctrl = nvkm_gsp_rm_ctrl_rd(&gsp->internal.device.subdevice,
+				   NV2080_CTRL_CMD_INTERNAL_MEMSYS_GET_STATIC_CONFIG,
+				   sizeof(*ctrl));
+	if (IS_ERR(ctrl)) {
+		nvkm_warn(&gsp->subdev, "failed to read memsys config, compression disabled\n");
+		return;
+	}
+
+	if (!ctrl->bDisableCompbitBacking &&
+	    (ctrl->bOneToOneComptagLineAllocation || ctrl->bUseRawModeComptaglineAllocation)) {
+		gsp->fb.comp.disabled = false;
+		gsp->fb.comp.plc_disabled = ctrl->bDisablePostL2Compression;
+		gsp->fb.comp.page_shift = ctrl->comprPageShift;
+	}
+
+	nvkm_debug(&gsp->subdev, "comp: disabled:%d plc_disabled:%d page_shift:%d "
+		   "(cbc_disabled:%d 1:1:%d raw:%d)\n",
+		   gsp->fb.comp.disabled, gsp->fb.comp.plc_disabled, gsp->fb.comp.page_shift,
+		   ctrl->bDisableCompbitBacking, ctrl->bOneToOneComptagLineAllocation,
+		   ctrl->bUseRawModeComptaglineAllocation);
+
+	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
+}
+
 static int
 r570_gsp_get_static_info(struct nvkm_gsp *gsp)
 {
@@ -137,6 +169,7 @@ r570_gsp_get_static_info(struct nvkm_gsp *gsp)
 		}
 	}
 
+	r570_gsp_get_static_info_memsys(gsp);
 	return 0;
 }
 

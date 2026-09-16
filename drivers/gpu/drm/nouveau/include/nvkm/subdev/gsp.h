@@ -117,6 +117,12 @@ struct nvkm_gsp {
 		} region[16];
 		int region_nr;
 		u32 rsvd_size;
+
+		struct {
+			bool disabled;
+			bool plc_disabled;
+			u8 page_shift;
+		} comp;
 	} fb;
 
 	struct {
