@@ -33,6 +33,9 @@ struct nouveau_bo {
 	struct drm_gem_object *r_obj;
 	bool no_share;
 
+	u64 comp_charged;
+	bool comp_denied;
+
 	/* GPU address space is independent of CPU word size */
 	uint64_t offset;
 
@@ -61,6 +64,8 @@ nouveau_bo_fini(struct nouveau_bo *bo)
 }
 
 extern struct ttm_device_funcs nouveau_bo_driver;
+
+void nouveau_bo_comp_uncharge(struct nouveau_drm *, struct nouveau_bo *);
 
 void nouveau_bo_move_init(struct nouveau_drm *);
 struct nouveau_bo *nouveau_bo_alloc(struct nouveau_cli *, u64 *size, int *align,

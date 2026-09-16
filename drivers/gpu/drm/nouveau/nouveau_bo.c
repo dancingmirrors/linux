@@ -34,6 +34,8 @@
 #include "nouveau_chan.h"
 #include "nouveau_fence.h"
 
+#include <subdev/gsp.h>
+
 #include "nouveau_bo.h"
 #include "nouveau_ttm.h"
 #include "nouveau_gem.h"
@@ -133,6 +135,41 @@ nv10_bo_set_tiling(struct drm_device *dev, u32 addr,
 	return found;
 }
 
+static bool
+nouveau_bo_comp_charge(struct nouveau_drm *drm, struct nouveau_bo *nvbo,
+		       u64 size)
+{
+	struct nvkm_gsp *gsp = nvxx_device(drm)->gsp;
+	s64 old;
+
+	if (!gsp || !gsp->fb.comp.limit)
+		return true;
+
+	old = atomic64_read(&gsp->fb.comp.used);
+	do {
+		if (old + size > gsp->fb.comp.limit)
+			return false;
+	} while (!atomic64_try_cmpxchg(&gsp->fb.comp.used, &old, old + size));
+
+	nvbo->comp_charged = size;
+	return true;
+}
+
+void
+nouveau_bo_comp_uncharge(struct nouveau_drm *drm, struct nouveau_bo *nvbo)
+{
+	struct nvkm_gsp *gsp;
+
+	if (!nvbo->comp_charged)
+		return;
+
+	gsp = nvxx_device(drm)->gsp;
+	if (!WARN_ON(!gsp))
+		atomic64_sub(nvbo->comp_charged, &gsp->fb.comp.used);
+
+	nvbo->comp_charged = 0;
+}
+
 static void
 nouveau_bo_del_ttm(struct ttm_buffer_object *bo)
 {
@@ -141,6 +178,7 @@ nouveau_bo_del_ttm(struct ttm_buffer_object *bo)
 	struct nouveau_bo *nvbo = nouveau_bo(bo);
 
 	WARN_ON(nvbo->bo.pin_count > 0);
+	nouveau_bo_comp_uncharge(drm, nvbo);
 	nouveau_bo_del_io_reserve_lru(bo);
 	nv10_bo_put_tile_region(dev, nvbo->tile, NULL);
 
@@ -337,6 +375,17 @@ nouveau_bo_alloc(struct nouveau_cli *cli, u64 *size, int *align, u32 domain,
 	}
 
 	nouveau_bo_fixup_align(nvbo, align, size);
+
+	if (nvbo->comp && (domain & NOUVEAU_GEM_DOMAIN_VRAM) &&
+	    !nouveau_bo_comp_charge(drm, nvbo, *size)) {
+		if (mmu->object.oclass >= NVIF_CLASS_MMU_GF100)
+			nvbo->kind = mmu->kind[nvbo->kind];
+		nvbo->comp = 0;
+		nvbo->comp_denied = true;
+
+		NV_INFO_ONCE(drm, "comp: budget exhausted, buffer denied "
+			     "compression (%llu KiB)\n", *size >> 10);
+	}
 
 	return nvbo;
 }

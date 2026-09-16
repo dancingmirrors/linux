@@ -649,6 +649,18 @@ nouveau_uvmm_sm_unmap_prepare_unwind(struct nouveau_uvmm *uvmm,
 	nouveau_uvmm_sm_prepare_unwind(uvmm, new, ops, last, NULL);
 }
 
+static u8
+op_map_kind(struct nouveau_uvmm *uvmm, struct drm_gpuva_op_map *op, u8 kind)
+{
+	struct nouveau_bo *nvbo = nouveau_gem_object(op->gem.obj);
+	struct nvif_mmu *mmu = &uvmm->vmm.cli->mmu;
+
+	if (nvbo->comp_denied && kind < mmu->kind_nr)
+		return mmu->kind[kind];
+
+	return kind;
+}
+
 static int
 op_map_prepare(struct nouveau_uvmm *uvmm,
 	       struct nouveau_uvma **puvma,
@@ -663,7 +675,7 @@ op_map_prepare(struct nouveau_uvmm *uvmm,
 		return ret;
 
 	uvma->region = args->region;
-	uvma->kind = args->kind;
+	uvma->kind = op_map_kind(uvmm, op, args->kind);
 	uvma->page_shift = args->page_shift ? args->page_shift :
 			   select_page_shift(uvmm, op);
 

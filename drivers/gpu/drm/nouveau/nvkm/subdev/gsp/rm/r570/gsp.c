@@ -5,6 +5,8 @@
 #include <rm/rm.h>
 #include <rm/rpc.h>
 
+#include <core/option.h>
+
 #include <asm-generic/video.h>
 
 #include "nvrm/fb.h"
@@ -110,6 +112,33 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 		   gsp->fb.comp.disabled, gsp->fb.comp.plc_disabled, gsp->fb.comp.page_shift,
 		   ctrl->bDisableCompbitBacking, ctrl->bOneToOneComptagLineAllocation,
 		   ctrl->bUseRawModeComptaglineAllocation);
+
+	nvkm_debug(&gsp->subdev, "comp: l2:%llu KiB ltc:%d lts/ltc:%d "
+		   "compr_page:%d B\n",
+		   ctrl->l2CacheSize >> 10, ctrl->ltcCount, ctrl->ltsPerLtcCount,
+		   ctrl->comprPageSize);
+
+	if (!gsp->fb.comp.disabled) {
+		struct nvkm_device *device = gsp->subdev.device;
+		const bool gb20x = device->chipset >= 0x1b0 &&
+				   device->chipset <  0x1c0;
+		u32 slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
+		u64 dflt = 0;
+		long opt;
+
+		if (gb20x && slices && ctrl->comprPageSize)
+			dflt = 448ULL * slices * ctrl->comprPageSize;
+
+		opt = nvkm_longopt(device->cfgopt, "NvCompLimitMiB", -1);
+		if (opt >= 0)
+			dflt = min_t(u64, opt, 1024 * 1024) << 20;
+
+		gsp->fb.comp.limit = dflt;
+
+		nvkm_debug(&gsp->subdev, "comp: limit %llu MiB (%u slices%s)\n",
+			   gsp->fb.comp.limit >> 20, slices,
+			   gb20x ? "" : ", not GB20x");
+	}
 
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
 }

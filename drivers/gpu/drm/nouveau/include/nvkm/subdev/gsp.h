@@ -122,6 +122,8 @@ struct nvkm_gsp {
 			bool disabled;
 			bool plc_disabled;
 			u8 page_shift;
+			u64 limit;
+			atomic64_t used;
 		} comp;
 	} fb;
 
