@@ -86,9 +86,44 @@ r570_gsp_xlat_mc_engine_idx(u32 mc_engine_idx, enum nvkm_subdev_type *ptype, int
 }
 
 static void
+r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
+{
+	NV0080_CTRL_FB_GET_COMPBIT_STORE_INFO_PARAMS *ctrl;
+	u64 by_max_line, by_coverage;
+
+	ctrl = nvkm_gsp_rm_ctrl_rd(&gsp->internal.device.object,
+				   NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO,
+				   sizeof(*ctrl));
+	if (IS_ERR(ctrl)) {
+		nvkm_warn(&gsp->subdev, "failed to read compbit store info\n");
+		return;
+	}
+
+	by_max_line = (u64)ctrl->MaxCompbitLine << gsp->fb.comp.page_shift;
+	by_coverage = (u64)ctrl->cbcCoveragePerSlice * slices;
+
+	nvkm_debug(&gsp->subdev, "cbc: store 0x%llx bytes @ 0x%llx aspace:%d policy:%d\n",
+		   ctrl->Size, ctrl->Address, ctrl->AddressSpace,
+		   ctrl->comptaglineAllocationPolicy);
+
+	nvkm_debug(&gsp->subdev, "cbc: max_line:%d tags/cacheline:%d cacheline:%d B "
+		   "(%d B/slice) gobs/tag/slice:%d\n",
+		   ctrl->MaxCompbitLine, ctrl->comptagsPerCacheLine, ctrl->cacheLineSize,
+		   ctrl->cacheLineSizePerSlice, ctrl->gobsPerComptagPerSlice);
+
+	nvkm_debug(&gsp->subdev, "cbc: covers %llu MiB by max_line, %llu MiB by "
+		   "coverage/slice (%d B x %d), limit is %llu MiB\n",
+		   by_max_line >> 20, by_coverage >> 20,
+		   ctrl->cbcCoveragePerSlice, slices, gsp->fb.comp.limit >> 20);
+
+	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.object, ctrl);
+}
+
+static void
 r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 {
 	NV2080_CTRL_INTERNAL_MEMSYS_GET_STATIC_CONFIG_PARAMS *ctrl;
+	u32 slices = 0;
 
 	gsp->fb.comp.disabled = true;
 
@@ -122,9 +157,10 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 		struct nvkm_device *device = gsp->subdev.device;
 		const bool gb20x = device->chipset >= 0x1b0 &&
 				   device->chipset <  0x1c0;
-		u32 slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
 		u64 dflt = 0;
 		long opt;
+
+		slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
 
 		if (gb20x && slices && ctrl->comprPageSize)
 			dflt = 448ULL * slices * ctrl->comprPageSize;
@@ -141,6 +177,9 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 	}
 
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
+
+	if (!gsp->fb.comp.disabled)
+		r570_gsp_get_compbit_store_info(gsp, slices);
 }
 
 static int
