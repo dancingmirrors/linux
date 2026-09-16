@@ -41,6 +41,7 @@
 
 #include <core/gpuobj.h>
 #include <core/option.h>
+#include <subdev/gsp.h>
 #include <core/pci.h>
 #include <core/tegra.h>
 
@@ -1143,6 +1144,32 @@ nouveau_pmops_runtime(void)
 	return nouveau_runtime_pm == 1;
 }
 
+static bool
+nouveau_gcoff_ready(struct nouveau_drm *drm)
+{
+	struct nvkm_device *device = nvxx_device(drm);
+	struct nvkm_gsp *gsp = device->gsp;
+	bool gc6, gcoff;
+	int ret;
+
+	if (!nvkm_gsp_rm(gsp))
+		return true;
+
+	ret = r535_gsp_gcx_ready(gsp, &gc6, &gcoff);
+	if (ret) {
+		NV_DEBUG(drm, "gcx: prerequisite query failed (%d)\n", ret);
+		return true;
+	}
+
+	if (!gcoff)
+		NV_DEBUG(drm, "gcx: gcoff not satisfied (gc6:%d)\n", gc6);
+
+	if (!nvkm_longopt(device->cfgopt, "NvGcxCheck", 0))
+		return true;
+
+	return gcoff;
+}
+
 static int
 nouveau_pmops_runtime_suspend(struct device *dev)
 {
@@ -1152,6 +1179,12 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 
 	if (!nouveau_pmops_runtime()) {
 		pm_runtime_forbid(dev);
+		return -EBUSY;
+	}
+
+	if (!nouveau_gcoff_ready(drm)) {
+		NV_DEBUG(drm, "GPU not ready for runtime suspend, delaying\n");
+		pm_runtime_mark_last_busy(dev);
 		return -EBUSY;
 	}
 

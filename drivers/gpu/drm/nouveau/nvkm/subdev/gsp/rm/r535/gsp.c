@@ -1733,6 +1733,26 @@ r535_gsp_sr_data_size(struct nvkm_gsp *gsp)
 }
 
 int
+r535_gsp_gcx_ready(struct nvkm_gsp *gsp, bool *gc6, bool *gcoff)
+{
+	NV2080_CTRL_INTERNAL_GCX_ENTRY_PREREQUISITE_PARAMS *ctrl;
+
+	ctrl = nvkm_gsp_rm_ctrl_rd(&gsp->internal.device.subdevice,
+				   NV2080_CTRL_CMD_INTERNAL_GCX_ENTRY_PREREQUISITE,
+				   sizeof(*ctrl));
+	if (IS_ERR(ctrl))
+		return PTR_ERR(ctrl);
+
+	*gc6 = ctrl->bIsGC6Satisfied;
+	*gcoff = ctrl->bIsGCOFFSatisfied;
+
+	nvkm_debug(&gsp->subdev, "gcx: gc6:%d gcoff:%d\n", *gc6, *gcoff);
+
+	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
+	return 0;
+}
+
+int
 r535_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 {
 	struct nvkm_rm *rm = gsp->rm;
