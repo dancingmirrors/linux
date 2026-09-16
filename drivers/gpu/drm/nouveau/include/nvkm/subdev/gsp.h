@@ -202,6 +202,7 @@ struct nvkm_gsp {
 	} msgq;
 
 	bool running;
+	bool dead;
 
 	/* Internal GSP-RM control handles. */
 	struct {

@@ -1799,6 +1799,10 @@ r535_gsp_init(struct nvkm_gsp *gsp)
 	if (WARN_ON(!nvkm_falcon_riscv_active(&gsp->falcon)))
 		return -EIO;
 
+	mutex_lock(&gsp->cmdq.mutex);
+	gsp->dead = false;
+	mutex_unlock(&gsp->cmdq.mutex);
+
 	ret = r535_gsp_rpc_poll(gsp, NV_VGPU_MSG_EVENT_GSP_INIT_DONE);
 	if (ret)
 		goto done;

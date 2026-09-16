@@ -144,6 +144,9 @@ r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 gsp_rpc_len, int *ptime)
 	u32 size, rptr = *gsp->msgq.rptr;
 	int used;
 
+	if (gsp->dead)
+		return -ENODEV;
+
 	size = DIV_ROUND_UP(GSP_MSG_HDR_SIZE + gsp_rpc_len,
 			    GSP_PAGE_SIZE);
 	if (WARN_ON(!size || size >= gsp->msgq.cnt))
@@ -161,8 +164,12 @@ r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 gsp_rpc_len, int *ptime)
 		usleep_range(1, 2);
 	} while (--(*ptime));
 
-	if (WARN_ON(!*ptime))
+	if (WARN_ON(!*ptime)) {
+		nvkm_error(&gsp->subdev,
+			   "GSP-RM is not responding, no further RPCs will be sent\n");
+		gsp->dead = true;
 		return -ETIMEDOUT;
+	}
 
 	return used;
 }
@@ -360,6 +367,11 @@ r535_gsp_cmdq_push(struct nvkm_gsp *gsp, void *rpc)
 	int free, time = 1000000;
 	u32 wptr, size, step, len;
 	u32 off = 0;
+
+	if (gsp->dead) {
+		kvfree(msg);
+		return -ENODEV;
+	}
 
 	len = ALIGN(GSP_MSG_HDR_SIZE + gsp_rpc_len, GSP_PAGE_SIZE);
 
