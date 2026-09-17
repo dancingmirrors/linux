@@ -984,6 +984,9 @@ nouveau_do_suspend(struct nouveau_drm *drm, bool runtime)
 		}
 	}
 
+	/* Clear every CPU mapping pointing at the device. */
+	unmap_mapping_range(dev->anon_inode->i_mapping, 0, 0, 1);
+
 	NV_DEBUG(drm, "suspending object tree...\n");
 	ret = nvif_client_suspend(&drm->_client, runtime);
 	if (ret)

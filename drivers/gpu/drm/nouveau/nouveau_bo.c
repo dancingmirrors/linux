@@ -1395,12 +1395,16 @@ out:
 						typeof(*nvbo),
 						io_reserve_lru);
 		if (nvbo) {
+			struct ttm_resource *res = nvbo->bo.resource;
+
 			list_del_init(&nvbo->io_reserve_lru);
 			drm_vma_node_unmap(&nvbo->bo.base.vma_node,
 					   bdev->dev_mapping);
-			nouveau_ttm_io_mem_free_locked(drm, nvbo->bo.resource);
-			nvbo->bo.resource->bus.offset = 0;
-			nvbo->bo.resource->bus.addr = NULL;
+			if (res && (res->bus.offset || res->bus.addr)) {
+				nouveau_ttm_io_mem_free_locked(drm, res);
+				res->bus.offset = 0;
+				res->bus.addr = NULL;
+			}
 			goto retry;
 		}
 
