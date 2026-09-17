@@ -2023,8 +2023,11 @@ static int r535_gsp_copy_log(struct dentry *parent,
  */
 static void r535_gsp_retain_logging(struct nvkm_gsp *gsp)
 {
+	static atomic_t retained_seq = ATOMIC_INIT(0);
 	struct device *dev = gsp->subdev.device->dev;
 	struct r535_gsp_log *log = NULL;
+	struct dentry *dir = NULL;
+	char name[64];
 	int ret;
 
 	if (!keep_gsp_logging || !gsp->debugfs.parent) {
@@ -2044,46 +2047,55 @@ static void r535_gsp_retain_logging(struct nvkm_gsp *gsp)
 		goto error;
 
 	/*
-	 * Since the nvkm_gsp object is going away, the debugfs_blob_wrapper
-	 * objects are also being deleted, which means the dentries will no
-	 * longer be valid.  Delete the existing entries so that we can create
-	 * new ones with the same name.
+	 * Migrate into a directory of our own instead of holding on to this
+	 * device's. The device name comes back when the driver is bound
+	 * again, and a retained directory still sitting on it makes the next
+	 * probe's debugfs_create_dir() fail, leaving the new instance with no
+	 * GSP-RM logging at all, which is exactly what you want to read
+	 * after a rebind. Sequence the name so repeated rebinds each keep
+	 * their own logs.
 	 */
-	debugfs_remove(gsp->debugfs.init);
-	debugfs_remove(gsp->debugfs.intr);
-	debugfs_remove(gsp->debugfs.rm);
-	debugfs_remove(gsp->debugfs.pmu);
+	snprintf(name, sizeof(name), "%s-retained.%u", dev_name(dev),
+		 atomic_inc_return(&retained_seq));
 
-	ret = r535_gsp_copy_log(gsp->debugfs.parent, "loginit", &gsp->blob_init, &log->blob_init);
+	dir = debugfs_create_dir(name, nouveau_debugfs_root);
+	if (IS_ERR(dir)) {
+		dir = NULL;
+		goto error;
+	}
+
+	ret = r535_gsp_copy_log(dir, "loginit", &gsp->blob_init, &log->blob_init);
 	if (ret)
 		goto error;
 
-	ret = r535_gsp_copy_log(gsp->debugfs.parent, "logintr", &gsp->blob_intr, &log->blob_intr);
+	ret = r535_gsp_copy_log(dir, "logintr", &gsp->blob_intr, &log->blob_intr);
 	if (ret)
 		goto error;
 
-	ret = r535_gsp_copy_log(gsp->debugfs.parent, "logrm", &gsp->blob_rm, &log->blob_rm);
+	ret = r535_gsp_copy_log(dir, "logrm", &gsp->blob_rm, &log->blob_rm);
 	if (ret)
 		goto error;
 
-	ret = r535_gsp_copy_log(gsp->debugfs.parent, "logpmu", &gsp->blob_pmu, &log->blob_pmu);
+	ret = r535_gsp_copy_log(dir, "logpmu", &gsp->blob_pmu, &log->blob_pmu);
 	if (ret)
 		goto error;
 
 	/* The nvkm_gsp object is going away, so save the dentry */
-	log->debugfs_logging_dir = gsp->debugfs.parent;
+	log->debugfs_logging_dir = dir;
 
 	log->log.shutdown = r535_debugfs_shutdown;
 	list_add(&log->log.entry, &gsp_logs.head);
 
 	nvkm_warn(&gsp->subdev,
 		  "logging buffers migrated to /sys/kernel/debug/nouveau/%s\n",
-		  dev_name(dev));
+		  name);
 
+	debugfs_remove(gsp->debugfs.parent);
 	return;
 
 error:
 	nvkm_warn(&gsp->subdev, "failed to migrate logging buffers\n");
+	debugfs_remove(dir);
 
 exit:
 	debugfs_remove(gsp->debugfs.parent);
