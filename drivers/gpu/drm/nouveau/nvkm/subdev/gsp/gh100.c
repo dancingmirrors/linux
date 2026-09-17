@@ -13,6 +13,7 @@
 #include <rm/r570/nvrm/gsp.h>
 
 #include <nvhw/drf.h>
+#include <nvhw/ref/gh100/dev_bus.h>
 #include <nvhw/ref/gh100/dev_falcon_v4.h>
 #include <nvhw/ref/gh100/dev_riscv_pri.h>
 
@@ -38,6 +39,53 @@ gh100_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 	} while(time--);
 
 	return -ETIMEDOUT;
+}
+
+static void
+gh100_gsp_fmc_error_reset(struct nvkm_gsp *gsp)
+{
+	nvkm_wr32(gsp->subdev.device, NV_PBUS_SW_SCRATCH_GSP_FMC_ERROR, 0);
+}
+
+static bool
+gh100_gsp_fmc_error(struct nvkm_gsp *gsp)
+{
+	struct nvkm_subdev *subdev = &gsp->subdev;
+	u32 error = nvkm_rd32(subdev->device, NV_PBUS_SW_SCRATCH_GSP_FMC_ERROR);
+	u32 partition;
+
+	if (!error || error == 0xffffffff || (error & 0xffff0000) == 0xbadf0000)
+		return false;
+
+	partition = (NVVAL_GET(error, NV_PBUS, SW_SCRATCH_GSP_FMC_ERROR, PARTITION) -
+		     NV_PBUS_SW_SCRATCH_GSP_FMC_ERROR_PARTITION_BIAS) &
+		    DRF_MASK(NV_PBUS_SW_SCRATCH_GSP_FMC_ERROR_PARTITION);
+
+	switch (NVVAL_GET(error, NV_PBUS, SW_SCRATCH_GSP_FMC_ERROR, VARIANT)) {
+	case NV_PBUS_SW_SCRATCH_GSP_FMC_ERROR_VARIANT_SK:
+		nvkm_error(subdev,
+			   "GSP-FMC: partition %x, sk error 0x%02x, phase 0x%02x (0x%08x)\n",
+			   partition,
+			   (u32)NVVAL_GET(error, NV_PBUS, SW_SCRATCH_GSP_FMC_ERROR, SK_ERROR),
+			   (u32)NVVAL_GET(error, NV_PBUS, SW_SCRATCH_GSP_FMC_ERROR, SK_PHASE),
+			   error);
+		break;
+	case NV_PBUS_SW_SCRATCH_GSP_FMC_ERROR_VARIANT_GENERIC:
+		nvkm_error(subdev,
+			   "GSP-FMC: partition %x, error 0x%04x, info 0x%02x (0x%08x)\n",
+			   partition,
+			   (u32)NVVAL_GET(error, NV_PBUS, SW_SCRATCH_GSP_FMC_ERROR,
+					  GENERIC_ERROR_CODE),
+			   (u32)NVVAL_GET(error, NV_PBUS, SW_SCRATCH_GSP_FMC_ERROR,
+					  GENERIC_ADDITIONAL_INFO),
+			   error);
+		break;
+	default:
+		nvkm_error(subdev, "GSP-FMC: unknown error 0x%08x\n", error);
+		break;
+	}
+
+	return true;
 }
 
 static bool
@@ -70,7 +118,7 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 {
 	struct nvkm_subdev *subdev = &gsp->subdev;
 	struct nvkm_device *device = subdev->device;
-	const bool resume = gsp->sr.meta.data != NULL;
+	const bool resume = nvkm_gsp_sr_resumable(gsp);
 	struct nvkm_gsp_mem *meta;
 	GSP_FMC_BOOT_PARAMS *args;
 	int ret, time = 4000;
@@ -78,9 +126,13 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 	u32 mbox0;
 
 	if (!resume) {
-		ret = nvkm_gsp_mem_ctor(gsp, sizeof(*args), &gsp->fmc.args);
-		if (ret)
-			return ret;
+		if (gsp->fmc.args.data) {
+			memset(gsp->fmc.args.data, 0, gsp->fmc.args.size);
+		} else {
+			ret = nvkm_gsp_mem_ctor(gsp, sizeof(*args), &gsp->fmc.args);
+			if (ret)
+				return ret;
+		}
 
 		meta = &gsp->wpr_meta;
 	} else {
@@ -102,10 +154,15 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 	if (gsp->rm->wpr->rsvd_size_pmu)
 		rsvd_size = ALIGN(rsvd_size + gsp->rm->wpr->rsvd_size_pmu, 0x200000);
 
+	gh100_gsp_fmc_error_reset(gsp);
+
 	ret = nvkm_fsp_boot_gsp_fmc(device->fsp, gsp->fmc.args.addr, rsvd_size, resume,
 				    gsp->fmc.fw.addr, gsp->fmc.hash, gsp->fmc.pkey, gsp->fmc.sig);
-	if (ret)
+	if (ret) {
+		nvkm_error(subdev, "FSP refused to boot the GSP-FMC, %d\n", ret);
+		gh100_gsp_fmc_error(gsp);
 		return ret;
+	}
 
 	do {
 		if (gh100_gsp_lockdown_released(gsp, &mbox0))
@@ -116,13 +173,18 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 
 	if (time < 0) {
 		nvkm_error(subdev, "GSP-FMC boot timed out\n");
+		gh100_gsp_fmc_error(gsp);
 		return -ETIMEDOUT;
 	}
 
 	if (mbox0) {
 		nvkm_error(subdev, "GSP-FMC boot failed (mbox: 0x%08x)\n", mbox0);
+		gh100_gsp_fmc_error(gsp);
 		return -EIO;
 	}
+
+	if (gh100_gsp_fmc_error(gsp))
+		return -EIO;
 
 	return r535_gsp_init(gsp);
 }

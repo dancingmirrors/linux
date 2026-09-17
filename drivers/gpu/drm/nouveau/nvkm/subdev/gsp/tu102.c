@@ -191,7 +191,7 @@ tu102_gsp_init(struct nvkm_gsp *gsp)
 	u32 mbox0, mbox1;
 	int ret;
 
-	if (!gsp->sr.meta.data) {
+	if (!nvkm_gsp_sr_resumable(gsp)) {
 		mbox0 = lower_32_bits(gsp->wpr_meta.addr);
 		mbox1 = upper_32_bits(gsp->wpr_meta.addr);
 	} else {

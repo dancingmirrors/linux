@@ -1243,6 +1243,12 @@ nouveau_pmops_runtime_resume(struct device *dev)
 	ret = nouveau_do_resume(drm, true);
 	if (ret) {
 		NV_ERROR(drm, "resume failed with: %d\n", ret);
+
+		nouveau_switcheroo_optimus_dsm();
+		pci_disable_device(pdev);
+		pci_ignore_hotplug(pdev);
+		pci_set_power_state(pdev, PCI_D3cold);
+		drm->dev->switch_power_state = DRM_SWITCH_POWER_DYNAMIC_OFF;
 		return ret;
 	}
 

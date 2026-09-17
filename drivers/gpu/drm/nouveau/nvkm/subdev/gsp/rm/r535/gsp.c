@@ -329,10 +329,6 @@ r535_gsp_postinit(struct nvkm_gsp *gsp)
 	nvkm_inth_allow(&gsp->subdev.inth);
 	nvkm_wr32(device, 0x110004, 0x00000040);
 
-	/* Release the DMA buffers that were needed only for boot and init */
-	nvkm_gsp_mem_dtor(&gsp->boot.fw);
-	nvkm_gsp_mem_dtor(&gsp->libos);
-
 	return ret;
 }
 
@@ -1583,6 +1579,9 @@ nvkm_gsp_sg_free(struct nvkm_device *device, struct sg_table *sgt)
 	struct scatterlist *sgl;
 	int i;
 
+	if (!sgt->sgl)
+		return;
+
 	dma_unmap_sgtable(device->dev, sgt, DMA_BIDIRECTIONAL, 0);
 
 	for_each_sgtable_sg(sgt, sgl, i) {
@@ -1592,6 +1591,8 @@ nvkm_gsp_sg_free(struct nvkm_device *device, struct sg_table *sgt)
 	}
 
 	sg_free_table(sgt);
+	sgt->orig_nents = 0;
+	sgt->nents = 0;
 }
 
 int
@@ -1752,6 +1753,15 @@ r535_gsp_gcx_ready(struct nvkm_gsp *gsp, bool *gc6, bool *gcoff)
 	return 0;
 }
 
+static void
+r535_gsp_sr_free(struct nvkm_gsp *gsp)
+{
+	nvkm_gsp_mem_dtor(&gsp->sr.meta);
+	nvkm_gsp_radix3_dtor(gsp, &gsp->sr.radix3);
+	nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.sgt);
+	gsp->sr.retired = false;
+}
+
 int
 r535_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 {
@@ -1829,13 +1839,19 @@ r535_gsp_init(struct nvkm_gsp *gsp)
 
 	gsp->running = true;
 
+	if (gsp->sr.retired)
+		r535_gsp_sr_free(gsp);
+
 done:
 	if (gsp->sr.meta.data) {
 		gsp->rm->api->fbsr->resume(gsp);
 
-		nvkm_gsp_mem_dtor(&gsp->sr.meta);
-		nvkm_gsp_radix3_dtor(gsp, &gsp->sr.radix3);
-		nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.sgt);
+		if (ret) {
+			gsp->sr.retired = true;
+			return ret;
+		}
+
+		r535_gsp_sr_free(gsp);
 		return ret;
 	}
 
@@ -2138,6 +2154,8 @@ r535_gsp_dtor(struct nvkm_gsp *gsp)
 {
 	idr_destroy(&gsp->client_id.idr);
 	mutex_destroy(&gsp->client_id.mutex);
+
+	r535_gsp_sr_free(gsp);
 
 	nvkm_gsp_radix3_dtor(gsp, &gsp->radix3);
 	nvkm_gsp_mem_dtor(&gsp->sig);

@@ -162,6 +162,8 @@ struct nvkm_gsp {
 		struct nvkm_gsp_radix3 radix3;
 		struct nvkm_gsp_mem meta;
 		struct sg_table fbsr;
+
+		bool retired;
 	} sr;
 
 	struct {
@@ -280,6 +282,12 @@ static inline bool
 nvkm_gsp_rm(struct nvkm_gsp *gsp)
 {
 	return gsp && (gsp->fws.rm || gsp->fw.img);
+}
+
+static inline bool
+nvkm_gsp_sr_resumable(struct nvkm_gsp *gsp)
+{
+	return gsp->sr.meta.data && !gsp->sr.retired;
 }
 
 #include <rm/rm.h>
