@@ -1147,12 +1147,15 @@ nouveau_pmops_runtime(void)
 	return nouveau_runtime_pm == 1;
 }
 
+#define NOUVEAU_GCX_MAX_DEFER 4
+
 static bool
 nouveau_gcoff_ready(struct nouveau_drm *drm)
 {
 	struct nvkm_device *device = nvxx_device(drm);
 	struct nvkm_gsp *gsp = device->gsp;
 	bool gc6, gcoff;
+	long max;
 	int ret;
 
 	if (!nvkm_gsp_rm(gsp))
@@ -1164,13 +1167,25 @@ nouveau_gcoff_ready(struct nouveau_drm *drm)
 		return true;
 	}
 
-	if (!gcoff)
-		NV_DEBUG(drm, "gcx: gcoff not satisfied (gc6:%d)\n", gc6);
+	if (gcoff) {
+		drm->gcx_deferrals = 0;
+		return true;
+	}
 
-	if (!nvkm_longopt(device->cfgopt, "NvGcxCheck", 0))
+	NV_DEBUG(drm, "gcx: gcoff not satisfied (gc6:%d)\n", gc6);
+
+	if (!nvkm_longopt(device->cfgopt, "NvGcxCheck", 1))
 		return true;
 
-	return gcoff;
+	max = nvkm_longopt(device->cfgopt, "NvGcxMaxDefer", NOUVEAU_GCX_MAX_DEFER);
+	if (max > 0 && ++drm->gcx_deferrals > max) {
+		NV_INFO_ONCE(drm, "gcx: prerequisites never met, suspending "
+			     "anyway after %ld deferrals\n", max);
+		drm->gcx_deferrals = 0;
+		return true;
+	}
+
+	return false;
 }
 
 static int

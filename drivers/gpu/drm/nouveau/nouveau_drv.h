@@ -226,6 +226,12 @@ struct nouveau_drm {
 
 	u8 old_pm_cap;
 
+	/*
+	 * Consecutive runtime suspends refused because GSP-RM said the GCx
+	 * entry prerequisites were unmet.
+	 */
+	unsigned int gcx_deferrals;
+
 	struct {
 		struct agp_bridge_data *bridge;
 		u32 base;
