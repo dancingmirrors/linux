@@ -645,8 +645,24 @@ static int acpi_battery_get_state(struct acpi_battery *battery)
 	if (battery->power_unit == ACPI_BATTERY_POWER_UNIT_MA &&
 		battery->rate_now != ACPI_BATTERY_VALUE_UNKNOWN &&
 		(s16)(battery->rate_now) < 0) {
-		battery->rate_now = abs((s16)battery->rate_now);
-		pr_warn_once(FW_BUG "(dis)charge rate invalid.\n");
+		unsigned int raw_rate = battery->rate_now;
+
+		/*
+		 * 0xffff is the "unknown" sentinel of the 16-bit smart battery
+		 * Current() register. Firmware that widens that register into
+		 * _BST without translating the sentinel first would otherwise
+		 * be read as -1 mA, turning "no reading" into a bogus rate of
+		 * 1 mA that userspace then uses for time-to-empty estimates.
+		 */
+		if ((u16)raw_rate == 0xffff) {
+			battery->rate_now = ACPI_BATTERY_VALUE_UNKNOWN;
+			pr_warn_once(FW_BUG "(dis)charge rate invalid: _BST returned 0x%08x, reporting rate as unknown.\n",
+				     raw_rate);
+		} else {
+			battery->rate_now = abs((s16)raw_rate);
+			pr_warn_once(FW_BUG "(dis)charge rate invalid: _BST returned 0x%08x, using %d mA.\n",
+				     raw_rate, battery->rate_now);
+		}
 	}
 
 	if (test_bit(ACPI_BATTERY_QUIRK_PERCENTAGE_CAPACITY, &battery->flags)
