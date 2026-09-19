@@ -3288,9 +3288,16 @@ int xe_guc_exec_queue_memory_cat_error_handler(struct xe_guc *guc, u32 *msg,
 		return 0;
 	}
 
-	q = g2h_exec_queue_lookup(guc, guc_id);
-	if (unlikely(!q))
+	if (unlikely(guc_id >= GUC_ID_MAX)) {
+		xe_gt_err(gt, "Memory CAT error with invalid guc_id %u\n", guc_id);
 		return -EPROTO;
+	}
+
+	q = xa_load(&guc->submission_state.exec_queue_lookup, guc_id);
+	if (unlikely(!q)) {
+		xe_gt_err_ratelimited(gt, "Memory CAT error for unknown guc_id=%u\n", guc_id);
+		return 0;
+	}
 
 	/*
 	 * The type is HW-defined and changes based on platform, so we don't
