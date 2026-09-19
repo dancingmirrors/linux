@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/fault-inject.h>
 #include <linux/units.h>
+#include <linux/wait_bit.h>
 
 #include <drm/drm_client.h>
 #include <drm/drm_gem_ttm_helper.h>
@@ -182,9 +183,16 @@ static void xe_file_close(struct drm_device *dev, struct drm_file *file)
 	xa_for_each(&xef->exec_queue.xa, idx, q) {
 		if (q->vm && q->hwe->hw_engine_group)
 			xe_hw_engine_group_del_exec_queue(q->hwe->hw_engine_group, q);
+		atomic_inc(&xef->exec_queue.pending_removal);
 		xe_exec_queue_kill(q);
 		xe_exec_queue_put(q);
 	}
+
+	if (!wait_var_event_timeout(&xef->exec_queue.pending_removal,
+				    !atomic_read(&xef->exec_queue.pending_removal),
+				    5 * HZ))
+		drm_warn(&xe->drm, "Timed out waiting for exec queue teardown\n");
+
 	xa_for_each(&xef->vm.xa, idx, vm)
 		xe_vm_close_and_put(vm);
 
