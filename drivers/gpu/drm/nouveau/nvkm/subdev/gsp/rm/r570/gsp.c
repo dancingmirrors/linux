@@ -116,6 +116,8 @@ r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
 		   by_max_line >> 20, by_coverage >> 20,
 		   ctrl->cbcCoveragePerSlice, slices);
 
+	gsp->fb.comp.cbc_size = ctrl->Size;
+
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.object, ctrl);
 	return by_coverage;
 }
@@ -294,7 +296,9 @@ r570_gsp_set_system_info(struct nvkm_gsp *gsp)
 	info->PCIRevisionID = pdev->revision;
 	r570_gsp_acpi_info(gsp, &info->acpiMethodData);
 	info->bIsPrimary = video_is_primary_device(device->dev);
-	info->bPreserveVideoMemoryAllocations = false;
+
+	gsp->fb.preserve_vidmem = nvkm_boolopt(device->cfgopt, "NvPreserveVidmem", false);
+	info->bPreserveVideoMemoryAllocations = gsp->fb.preserve_vidmem;
 
 	return nvkm_gsp_rpc_wr(gsp, info, NVKM_GSP_RPC_REPLY_NOSEQ);
 }

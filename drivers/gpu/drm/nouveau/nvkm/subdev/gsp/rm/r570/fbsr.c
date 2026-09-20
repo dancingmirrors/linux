@@ -122,10 +122,15 @@ r570_fbsr_suspend(struct nvkm_gsp *gsp, bool runtime)
 	/* Disable BAR2 access. */
 	device->bar->bar2 = false;
 
-	/* Allocate system memory to hold RM's VRAM allocations across suspend. */
+	/* Allocate system memory to hold RM's VRAM allocations across suspend.
+	 * RM adds the compression bit cache's backing store to this when it
+	 * has asked GSP-RM to preserve VRAM, so do the same.
+	 */
 	size  = gsp->fb.heap.size;
 	size += gsp->fb.rsvd_size;
 	size += gsp->fb.bios.vga_workspace.size;
+	if (gsp->fb.preserve_vidmem)
+		size += gsp->fb.comp.cbc_size;
 	nvkm_debug(subdev, "fbsr: size: 0x%llx bytes\n", size);
 
 	ret = nvkm_gsp_sg(device, size, &gsp->sr.fbsr);

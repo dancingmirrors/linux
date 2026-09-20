@@ -124,7 +124,10 @@ struct nvkm_gsp {
 			u8 page_shift;
 			u64 limit;
 			atomic64_t used;
+			u64 cbc_size;
 		} comp;
+
+		bool preserve_vidmem;
 	} fb;
 
 	struct {
