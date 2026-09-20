@@ -25,4 +25,6 @@
 #define NV_PFSP_QUEUE_TAIL_ADDRESS                                                                       31:0           /* RWIVF */
 #define NV_PFSP_QUEUE_TAIL_ADDRESS_INIT                                                                  0x00000000     /* RWI-V */
 
+#define NV_PFSP_FALCON_COMMON_SCRATCH_GROUP_3(i)                                                         (0x008f0330+(i)*4) /* RW-4A */
+
 #endif // __gh100_dev_fsp_pri_h__

@@ -23,6 +23,8 @@
  */
 #include "priv.h"
 
+#include <subdev/gsp.h>
+
 s64
 nvkm_timer_wait_test(struct nvkm_timer_wait *wait)
 {
@@ -71,6 +73,12 @@ u64
 nvkm_timer_read(struct nvkm_timer *tmr)
 {
 	return tmr->func->read(tmr);
+}
+
+void
+nvkm_timer_set(struct nvkm_timer *tmr, u64 time)
+{
+	tmr->func->time(tmr, time);
 }
 
 void
@@ -171,7 +179,10 @@ nvkm_timer_init(struct nvkm_subdev *subdev)
 	tmr->dead = false;
 	if (tmr->func->init)
 		tmr->func->init(tmr);
-	tmr->func->time(tmr, ktime_to_ns(ktime_get()));
+
+	if (!nvkm_gsp_rm(subdev->device->gsp))
+		tmr->func->time(tmr, ktime_to_ns(ktime_get()));
+
 	nvkm_timer_alarm_trigger(tmr);
 	return 0;
 }

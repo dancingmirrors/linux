@@ -21,6 +21,8 @@
  */
 #include "priv.h"
 
+#include <subdev/timer.h>
+
 int
 nvkm_gsp_intr_nonstall(struct nvkm_gsp *gsp, enum nvkm_subdev_type type, int inst)
 {
@@ -62,9 +64,13 @@ static int
 nvkm_gsp_init(struct nvkm_subdev *subdev)
 {
 	struct nvkm_gsp *gsp = nvkm_gsp(subdev);
+	struct nvkm_timer *tmr = subdev->device->timer;
 
 	if (!gsp->func->init)
 		return 0;
+
+	if (nvkm_gsp_rm(gsp) && tmr)
+		nvkm_timer_set(tmr, ktime_get_real_ns());
 
 	return gsp->func->init(gsp);
 }
