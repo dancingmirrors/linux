@@ -1147,7 +1147,8 @@ nouveau_pmops_runtime(void)
 	return nouveau_runtime_pm == 1;
 }
 
-#define NOUVEAU_GCX_MAX_DEFER 4
+#define NOUVEAU_GCX_MAX_DEFER 0
+#define NOUVEAU_GCX_DEFER_WARN 12
 
 static bool
 nouveau_gcoff_ready(struct nouveau_drm *drm)
@@ -1164,28 +1165,36 @@ nouveau_gcoff_ready(struct nouveau_drm *drm)
 	ret = r535_gsp_gcx_ready(gsp, &gc6, &gcoff);
 	if (ret) {
 		NV_DEBUG(drm, "gcx: prerequisite query failed (%d)\n", ret);
-		return true;
+		goto ready;
 	}
 
-	if (gcoff) {
-		drm->gcx_deferrals = 0;
-		return true;
-	}
+	if (gc6 || gcoff)
+		goto ready;
 
-	NV_DEBUG(drm, "gcx: gcoff not satisfied (gc6:%d)\n", gc6);
+	NV_DEBUG(drm, "gcx: prerequisites not satisfied\n");
 
 	if (!nvkm_longopt(device->cfgopt, "NvGcxCheck", 1))
-		return true;
+		goto ready;
+
+	drm->gcx_deferrals++;
 
 	max = nvkm_longopt(device->cfgopt, "NvGcxMaxDefer", NOUVEAU_GCX_MAX_DEFER);
-	if (max > 0 && ++drm->gcx_deferrals > max) {
-		NV_INFO_ONCE(drm, "gcx: prerequisites never met, suspending "
-			     "anyway after %ld deferrals\n", max);
-		drm->gcx_deferrals = 0;
-		return true;
+	if (max > 0 && drm->gcx_deferrals > max) {
+		NV_INFO(drm, "gcx: prerequisites still unmet after %ld deferrals, suspending anyway\n",
+			max);
+		goto ready;
+	}
+
+	if (drm->gcx_deferrals == NOUVEAU_GCX_DEFER_WARN) {
+		NV_INFO(drm, "gcx: GSP-RM has refused GCx entry %d times in a row, keeping the GPU on until it agrees\n",
+			NOUVEAU_GCX_DEFER_WARN);
 	}
 
 	return false;
+
+ready:
+	drm->gcx_deferrals = 0;
+	return true;
 }
 
 static int
