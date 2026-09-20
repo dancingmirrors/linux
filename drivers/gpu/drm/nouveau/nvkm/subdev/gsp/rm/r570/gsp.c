@@ -85,7 +85,7 @@ r570_gsp_xlat_mc_engine_idx(u32 mc_engine_idx, enum nvkm_subdev_type *ptype, int
 	}
 }
 
-static void
+static u64
 r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
 {
 	NV0080_CTRL_FB_GET_COMPBIT_STORE_INFO_PARAMS *ctrl;
@@ -96,7 +96,7 @@ r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
 				   sizeof(*ctrl));
 	if (IS_ERR(ctrl)) {
 		nvkm_warn(&gsp->subdev, "failed to read compbit store info\n");
-		return;
+		return 0;
 	}
 
 	by_max_line = (u64)ctrl->MaxCompbitLine << gsp->fb.comp.page_shift;
@@ -112,18 +112,24 @@ r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
 		   ctrl->cacheLineSizePerSlice, ctrl->gobsPerComptagPerSlice);
 
 	nvkm_debug(&gsp->subdev, "cbc: covers %llu MiB by max_line, %llu MiB by "
-		   "coverage/slice (%d B x %d), limit is %llu MiB\n",
+		   "coverage/slice (%d x %d)\n",
 		   by_max_line >> 20, by_coverage >> 20,
-		   ctrl->cbcCoveragePerSlice, slices, gsp->fb.comp.limit >> 20);
+		   ctrl->cbcCoveragePerSlice, slices);
 
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.object, ctrl);
+	return by_coverage;
 }
 
 static void
 r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 {
 	NV2080_CTRL_INTERNAL_MEMSYS_GET_STATIC_CONFIG_PARAMS *ctrl;
-	u32 slices = 0;
+	struct nvkm_device *device = gsp->subdev.device;
+	const bool gb20x = device->chipset >= 0x1b0 && device->chipset < 0x1c0;
+	u64 dflt = 0, coverage = 0;
+	bool fw_comp;
+	u32 slices;
+	long opt;
 
 	gsp->fb.comp.disabled = true;
 
@@ -142,6 +148,12 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 		gsp->fb.comp.page_shift = ctrl->comprPageShift;
 	}
 
+	fw_comp = !gsp->fb.comp.disabled;
+	if (fw_comp && !nvkm_boolopt(device->cfgopt, "NvComp", true)) {
+		nvkm_info(&gsp->subdev, "comp: VRAM compression disabled by NvComp=0\n");
+		gsp->fb.comp.disabled = true;
+	}
+
 	nvkm_debug(&gsp->subdev, "comp: disabled:%d plc_disabled:%d page_shift:%d "
 		   "(cbc_disabled:%d 1:1:%d raw:%d)\n",
 		   gsp->fb.comp.disabled, gsp->fb.comp.plc_disabled, gsp->fb.comp.page_shift,
@@ -153,33 +165,31 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 		   ctrl->l2CacheSize >> 10, ctrl->ltcCount, ctrl->ltsPerLtcCount,
 		   ctrl->comprPageSize);
 
-	if (!gsp->fb.comp.disabled) {
-		struct nvkm_device *device = gsp->subdev.device;
-		const bool gb20x = device->chipset >= 0x1b0 &&
-				   device->chipset <  0x1c0;
-		u64 dflt = 0;
-		long opt;
+	slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
 
-		slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
-
-		if (gb20x && slices && ctrl->comprPageSize)
-			dflt = 448ULL * slices * ctrl->comprPageSize;
-
-		opt = nvkm_longopt(device->cfgopt, "NvCompLimitMiB", -1);
-		if (opt >= 0)
-			dflt = min_t(u64, opt, 1024 * 1024) << 20;
-
-		gsp->fb.comp.limit = dflt;
-
-		nvkm_debug(&gsp->subdev, "comp: limit %llu MiB (%u slices%s)\n",
-			   gsp->fb.comp.limit >> 20, slices,
-			   gb20x ? "" : ", not GB20x");
-	}
+	if (gb20x && slices && ctrl->comprPageSize)
+		dflt = 448ULL * slices * ctrl->comprPageSize;
 
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
 
-	if (!gsp->fb.comp.disabled)
-		r570_gsp_get_compbit_store_info(gsp, slices);
+	if (fw_comp)
+		coverage = r570_gsp_get_compbit_store_info(gsp, slices);
+
+	if (gsp->fb.comp.disabled)
+		return;
+
+	if (dflt && coverage && coverage < dflt)
+		dflt = coverage;
+
+	opt = nvkm_longopt(device->cfgopt, "NvCompLimitMiB", -1);
+	if (opt >= 0)
+		dflt = min_t(u64, opt, 1024 * 1024) << 20;
+
+	gsp->fb.comp.limit = dflt;
+
+	nvkm_debug(&gsp->subdev, "comp: limit %llu MiB (%u slices, cbc coverage %llu MiB%s)\n",
+		   gsp->fb.comp.limit >> 20, slices, coverage >> 20,
+		   gb20x ? "" : ", not GB20x");
 }
 
 static int
