@@ -135,7 +135,13 @@ nv84_fence_context_new(struct nouveau_channel *chan)
 	if (!fctx)
 		return -ENOMEM;
 
-	nouveau_fence_context_new(chan, &fctx->base);
+	ret = nouveau_fence_context_new(chan, &fctx->base);
+	if (ret) {
+		kfree(fctx);
+		chan->fence = NULL;
+		return ret;
+	}
+
 	fctx->base.emit = nv84_fence_emit;
 	fctx->base.sync = nv84_fence_sync;
 	fctx->base.read = nv84_fence_read;

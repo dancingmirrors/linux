@@ -27,6 +27,7 @@
 #include <linux/ktime.h>
 #include <linux/hrtimer.h>
 #include <linux/sched/signal.h>
+#include <linux/pm_runtime.h>
 #include <trace/events/dma_fence.h>
 
 #include <nvif/if0020.h>
@@ -48,20 +49,40 @@ nouveau_fctx(struct nouveau_fence *fence)
 static bool
 nouveau_fence_signal(struct nouveau_fence *fence)
 {
+	struct nouveau_fence_chan *fctx = nouveau_fctx(fence);
 	bool drop = false;
 
 	dma_fence_signal_locked(&fence->base);
 	list_del(&fence->head);
+	if (fctx->dev)
+		pm_runtime_put_noidle(fctx->dev);
 	rcu_assign_pointer(fence->channel, NULL);
 
 	if (test_bit(DMA_FENCE_FLAG_USER_BITS, &fence->base.flags)) {
-		struct nouveau_fence_chan *fctx = nouveau_fctx(fence);
-
 		if (!--fctx->notify_ref)
 			drop = true;
 	}
 
 	dma_fence_put(&fence->base);
+	return drop;
+}
+
+static bool
+nouveau_fence_reaped(struct nouveau_fence_chan *fctx)
+{
+	bool drop = false;
+
+	if (!fctx->dev)
+		return false;
+
+	if (list_empty(&fctx->pending)) {
+		if (!--fctx->notify_ref)
+			drop = true;
+
+		pm_runtime_mark_last_busy(fctx->dev);
+		pm_request_autosuspend(fctx->dev);
+	}
+
 	return drop;
 }
 
@@ -80,6 +101,7 @@ nouveau_fence_context_kill(struct nouveau_fence_chan *fctx, int error)
 {
 	struct nouveau_fence *fence, *tmp;
 	unsigned long flags;
+	bool done = false;
 
 	spin_lock_irqsave(&fctx->lock, flags);
 	list_for_each_entry_safe(fence, tmp, &fctx->pending, head) {
@@ -88,17 +110,22 @@ nouveau_fence_context_kill(struct nouveau_fence_chan *fctx, int error)
 
 		if (nouveau_fence_signal(fence))
 			nvif_event_block(&fctx->event);
+		done = true;
 	}
 	fctx->killed = 1;
+
+	if (done && nouveau_fence_reaped(fctx))
+		nvif_event_block(&fctx->event);
 	spin_unlock_irqrestore(&fctx->lock, flags);
 }
 
 void
 nouveau_fence_context_del(struct nouveau_fence_chan *fctx)
 {
-	cancel_work_sync(&fctx->uevent_work);
 	nouveau_fence_context_kill(fctx, 0);
+
 	nvif_event_dtor(&fctx->event);
+	cancel_work_sync(&fctx->uevent_work);
 	fctx->dead = 1;
 
 	/*
@@ -124,7 +151,7 @@ static void
 nouveau_fence_update(struct nouveau_channel *chan, struct nouveau_fence_chan *fctx)
 {
 	struct nouveau_fence *fence, *tmp;
-	bool drop = false;
+	bool drop = false, done = false;
 	u32 seq = fctx->read(chan);
 
 	list_for_each_entry_safe(fence, tmp, &fctx->pending, head) {
@@ -133,7 +160,11 @@ nouveau_fence_update(struct nouveau_channel *chan, struct nouveau_fence_chan *fc
 
 		if (nouveau_fence_signal(fence))
 			drop = true;
+		done = true;
 	}
+
+	if (done && nouveau_fence_reaped(fctx))
+		drop = true;
 
 	if (drop)
 		nvif_event_block(&fctx->event);
@@ -165,7 +196,7 @@ nouveau_fence_wait_uevent_handler(struct nvif_event *event, void *repv, u32 repc
 	return NVIF_EVENT_KEEP;
 }
 
-void
+int
 nouveau_fence_context_new(struct nouveau_channel *chan, struct nouveau_fence_chan *fctx)
 {
 	struct nouveau_cli *cli = chan->cli;
@@ -192,7 +223,7 @@ nouveau_fence_context_new(struct nouveau_channel *chan, struct nouveau_fence_cha
 
 	kref_init(&fctx->fence_ref);
 	if (!priv->uevent)
-		return;
+		return 0;
 
 	host->version = 0;
 	host->type = NVIF_CHAN_EVENT_V0_NON_STALL_INTR;
@@ -200,8 +231,11 @@ nouveau_fence_context_new(struct nouveau_channel *chan, struct nouveau_fence_cha
 	ret = nvif_event_ctor(&chan->user, "fenceNonStallIntr", (chan->runlist << 16) | chan->chid,
 			      nouveau_fence_wait_uevent_handler, false,
 			      args, __struct_size(args), &fctx->event);
+	if (ret)
+		return ret;
 
-	WARN_ON(ret);
+	fctx->dev = drm->dev->dev;
+	return 0;
 }
 
 int
@@ -233,8 +267,13 @@ nouveau_fence_emit(struct nouveau_fence *fence)
 			return -ENODEV;
 		}
 
-		nouveau_fence_update(chan, fctx);
+		if (fctx->dev) {
+			pm_runtime_get_noresume(fctx->dev);
+			if (list_empty(&fctx->pending) && !fctx->notify_ref++)
+				nvif_event_allow(&fctx->event);
+		}
 		list_add_tail(&fence->head, &fctx->pending);
+		nouveau_fence_update(chan, fctx);
 		spin_unlock_irq(&fctx->lock);
 	}
 
@@ -487,7 +526,13 @@ static bool nouveau_fence_no_signaling(struct dma_fence *f)
 	 * just not right away.
 	 */
 	if (nouveau_fence_is_signaled(f)) {
+		struct nouveau_fence_chan *fctx = nouveau_fctx(fence);
+
 		list_del(&fence->head);
+		if (fctx->dev)
+			pm_runtime_put_noidle(fctx->dev);
+		if (nouveau_fence_reaped(fctx))
+			nvif_event_block(&fctx->event);
 
 		dma_fence_put(&fence->base);
 		return false;

@@ -77,15 +77,22 @@ static int
 nv04_fence_context_new(struct nouveau_channel *chan)
 {
 	struct nv04_fence_chan *fctx = kzalloc_obj(*fctx);
-	if (fctx) {
-		nouveau_fence_context_new(chan, &fctx->base);
-		fctx->base.emit = nv04_fence_emit;
-		fctx->base.sync = nv04_fence_sync;
-		fctx->base.read = nv04_fence_read;
-		chan->fence = fctx;
-		return 0;
+	int ret;
+
+	if (!fctx)
+		return -ENOMEM;
+
+	ret = nouveau_fence_context_new(chan, &fctx->base);
+	if (ret) {
+		kfree(fctx);
+		return ret;
 	}
-	return -ENOMEM;
+
+	fctx->base.emit = nv04_fence_emit;
+	fctx->base.sync = nv04_fence_sync;
+	fctx->base.read = nv04_fence_read;
+	chan->fence = fctx;
+	return 0;
 }
 
 static void

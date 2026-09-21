@@ -7,6 +7,7 @@
 
 struct nouveau_drm;
 struct nouveau_bo;
+struct device;
 
 struct nouveau_fence {
 	struct dma_fence base;
@@ -50,6 +51,8 @@ struct nouveau_fence_chan {
 	u32 context;
 	char name[32];
 
+	struct device *dev;
+
 	struct work_struct uevent_work;
 	struct nvif_event event;
 	int notify_ref, dead, killed;
@@ -67,7 +70,7 @@ struct nouveau_fence_priv {
 
 #define nouveau_fence(drm) ((struct nouveau_fence_priv *)(drm)->fence)
 
-void nouveau_fence_context_new(struct nouveau_channel *, struct nouveau_fence_chan *);
+int  nouveau_fence_context_new(struct nouveau_channel *, struct nouveau_fence_chan *);
 void nouveau_fence_context_del(struct nouveau_fence_chan *);
 void nouveau_fence_context_free(struct nouveau_fence_chan *);
 void nouveau_fence_context_kill(struct nouveau_fence_chan *, int error);

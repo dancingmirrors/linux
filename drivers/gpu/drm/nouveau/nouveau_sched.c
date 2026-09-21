@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <linux/slab.h>
+#include <linux/pm_runtime.h>
 #include <drm/gpu_scheduler.h>
 #include <drm/drm_syncobj.h>
 
@@ -118,10 +119,15 @@ void
 nouveau_job_done(struct nouveau_job *job)
 {
 	struct nouveau_sched *sched = job->sched;
+	bool submitted;
 
 	spin_lock(&sched->job.list.lock);
-	list_del(&job->entry);
+	submitted = !list_empty(&job->entry);
+	list_del_init(&job->entry);
 	spin_unlock(&sched->job.list.lock);
+
+	if (submitted)
+		pm_runtime_put_autosuspend(job->cli->drm->dev->dev);
 
 	wake_up(&sched->job.wq);
 }
@@ -307,6 +313,8 @@ nouveau_job_submit(struct nouveau_job *job)
 	spin_lock(&sched->job.list.lock);
 	list_add(&job->entry, &sched->job.list.head);
 	spin_unlock(&sched->job.list.lock);
+
+	pm_runtime_get_noresume(job->cli->drm->dev->dev);
 
 	drm_sched_job_arm(&job->base);
 	job->done_fence = dma_fence_get(&job->base.s_fence->finished);
