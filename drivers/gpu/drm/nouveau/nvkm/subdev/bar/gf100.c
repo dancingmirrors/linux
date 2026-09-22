@@ -150,6 +150,8 @@ gf100_bar_dtor(struct nvkm_bar *base)
 {
 	struct gf100_bar *bar = gf100_bar(base);
 
+	base->bar2 = false;
+
 	nvkm_vmm_part(bar->bar[1].vmm, bar->bar[1].inst);
 	nvkm_vmm_unref(&bar->bar[1].vmm);
 	nvkm_memory_unref(&bar->bar[1].inst);

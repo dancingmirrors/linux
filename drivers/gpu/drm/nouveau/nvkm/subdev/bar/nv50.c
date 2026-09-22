@@ -204,6 +204,9 @@ void *
 nv50_bar_dtor(struct nvkm_bar *base)
 {
 	struct nv50_bar *bar = nv50_bar(base);
+
+	base->bar2 = false;
+
 	if (bar->mem) {
 		nvkm_gpuobj_del(&bar->bar1);
 		nvkm_vmm_part(bar->bar1_vmm, bar->mem->memory);
