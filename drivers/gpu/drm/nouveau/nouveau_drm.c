@@ -112,11 +112,17 @@ MODULE_PARM_DESC(runpm, "disable (0), force enable (1), optimus only default (-1
 static int nouveau_runtime_pm = -1;
 module_param_named(runpm, nouveau_runtime_pm, int, 0400);
 
+MODULE_PARM_DESC(recover,
+		 "re-bind the driver to recover a runtime-suspended GPU that didn't come back, at most this many times per 10 minutes (0 = never, default 3)");
+static int nouveau_recover = 3;
+module_param_named(recover, nouveau_recover, int, 0600);
+
 static struct drm_driver driver_stub;
 static struct drm_driver driver_pci;
 static struct drm_driver driver_platform;
 
 static void nouveau_drm_lost_work(struct work_struct *);
+static void nouveau_drm_recover_cancel(struct device *);
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *nouveau_debugfs_root;
@@ -940,6 +946,8 @@ nouveau_drm_remove(struct pci_dev *pdev)
 {
 	struct nouveau_drm *drm = pci_get_drvdata(pdev);
 
+	nouveau_drm_recover_cancel(&pdev->dev);
+
 	/* revert our workaround */
 	if (drm->old_pm_cap)
 		pdev->pm_cap = drm->old_pm_cap;
@@ -1094,6 +1102,174 @@ nouveau_drm_kill_channels(struct nouveau_drm *drm, bool block)
 	return done;
 }
 
+#define NOUVEAU_RECOVER_WINDOW	(10 * 60)	/* seconds */
+#define NOUVEAU_RECOVER_DELAY	1000		/* ms */
+
+struct nouveau_recover_data {
+	struct list_head head;
+	unsigned int count;
+	time64_t first;
+	bool pending;
+	struct task_struct *task;
+	char name[];
+};
+
+struct nouveau_recover_work {
+	struct delayed_work work;
+	struct device *dev;
+};
+
+static LIST_HEAD(nouveau_recover_list);
+static DEFINE_MUTEX(nouveau_recover_lock);
+
+static struct nouveau_recover_data *
+nouveau_recover_find(struct device *dev)
+{
+	const char *name = dev_name(dev);
+	struct nouveau_recover_data *data;
+
+	lockdep_assert_held(&nouveau_recover_lock);
+
+	list_for_each_entry(data, &nouveau_recover_list, head) {
+		if (!strcmp(data->name, name))
+			return data;
+	}
+
+	return NULL;
+}
+
+static struct nouveau_recover_data *
+nouveau_recover_get(struct device *dev)
+{
+	struct nouveau_recover_data *data = nouveau_recover_find(dev);
+
+	if (data)
+		return data;
+
+	data = kzalloc_flex(*data, name, strlen(dev_name(dev)) + 1, GFP_KERNEL);
+	if (!data)
+		return NULL;
+
+	strcpy(data->name, dev_name(dev));
+	list_add_tail(&data->head, &nouveau_recover_list);
+	return data;
+}
+
+static void
+nouveau_drm_recover_cancel(struct device *dev)
+{
+	struct nouveau_recover_data *data;
+
+	mutex_lock(&nouveau_recover_lock);
+	data = nouveau_recover_find(dev);
+	if (data && data->task != current)
+		data->pending = false;
+	mutex_unlock(&nouveau_recover_lock);
+}
+
+static void
+nouveau_drm_recover_fini(void)
+{
+	struct nouveau_recover_data *data;
+
+	mutex_lock(&nouveau_recover_lock);
+	while ((data = list_first_entry_or_null(&nouveau_recover_list,
+						typeof(*data), head))) {
+		list_del(&data->head);
+		kfree(data);
+	}
+	mutex_unlock(&nouveau_recover_lock);
+}
+
+static void
+nouveau_drm_recover_work(struct work_struct *work)
+{
+	struct nouveau_recover_work *rw =
+		container_of(work, typeof(*rw), work.work);
+	struct device *dev = rw->dev;
+	struct nouveau_recover_data *data;
+	bool go;
+
+	mutex_lock(&nouveau_recover_lock);
+	data = nouveau_recover_find(dev);
+	go = data && data->pending;
+	if (go)
+		data->task = current;
+	mutex_unlock(&nouveau_recover_lock);
+
+	if (go) {
+		dev_info(dev, "re-binding nouveau to recover the GPU\n");
+
+		if (device_reprobe(dev) || !dev->driver)
+			dev_err(dev, "nouveau: re-bind failed, GPU stays down\n");
+
+		mutex_lock(&nouveau_recover_lock);
+		data = nouveau_recover_find(dev);
+		if (data) {
+			data->task = NULL;
+			data->pending = false;
+		}
+		mutex_unlock(&nouveau_recover_lock);
+	}
+
+	put_device(dev);
+	kfree(rw);
+	module_put(THIS_MODULE);
+}
+
+static void
+nouveau_drm_recover_schedule(struct nouveau_drm *drm)
+{
+	struct device *dev = drm->dev->dev;
+	struct nouveau_recover_data *data;
+	struct nouveau_recover_work *rw;
+	time64_t now = ktime_get_boottime_seconds();
+	int max = READ_ONCE(nouveau_recover);
+
+	if (max <= 0)
+		return;
+
+	if (!nouveau_pmops_runtime())
+		return;
+
+	mutex_lock(&nouveau_recover_lock);
+
+	data = nouveau_recover_get(dev);
+	if (!data)
+		goto unlock;
+
+	if (!data->count || now - data->first > NOUVEAU_RECOVER_WINDOW) {
+		data->first = now;
+		data->count = 0;
+	}
+
+	if (data->count >= (unsigned int)max) {
+		NV_ERROR(drm, "not re-binding again: %u attempts in %llu seconds\n",
+			 data->count, (unsigned long long)(now - data->first));
+		goto unlock;
+	}
+
+	if (!try_module_get(THIS_MODULE))
+		goto unlock;
+
+	rw = kzalloc_obj(*rw);
+	if (!rw) {
+		module_put(THIS_MODULE);
+		goto unlock;
+	}
+
+	data->count++;
+	data->pending = true;
+
+	NV_ERROR(drm, "re-binding the driver to recover (attempt %u)\n", data->count);
+
+	rw->dev = get_device(dev);
+	INIT_DELAYED_WORK(&rw->work, nouveau_drm_recover_work);
+	schedule_delayed_work(&rw->work, msecs_to_jiffies(NOUVEAU_RECOVER_DELAY));
+unlock:
+	mutex_unlock(&nouveau_recover_lock);
+}
+
 static void
 nouveau_drm_lost_work(struct work_struct *work)
 {
@@ -1197,6 +1373,8 @@ nouveau_drm_shutdown(struct pci_dev *pdev)
 
 	if (!drm)
 		return;
+
+	nouveau_drm_recover_cancel(&pdev->dev);
 
 	if (nouveau_pmops_off(drm))
 		return;
@@ -1394,6 +1572,7 @@ nouveau_pmops_runtime_resume(struct device *dev)
 			 drm->rpm.gc6, drm->rpm.gcoff, drm->rpm.gcx_ret,
 			 drm->gcx_deferrals);
 		nouveau_drm_lost(drm);
+		nouveau_drm_recover_schedule(drm);
 
 		nouveau_switcheroo_optimus_dsm();
 		nouveau_pmops_runtime_off(drm, pdev);
@@ -1752,6 +1931,8 @@ nouveau_drm_exit(void)
 #endif
 	if (IS_ENABLED(CONFIG_DRM_NOUVEAU_SVM))
 		mmu_notifier_synchronize();
+
+	nouveau_drm_recover_fini();
 
 #ifdef CONFIG_DEBUG_FS
 	nvif_log_shutdown(&gsp_logs);
