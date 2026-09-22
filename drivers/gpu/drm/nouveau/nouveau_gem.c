@@ -82,9 +82,11 @@ nouveau_gem_object_del(struct drm_gem_object *gem)
 	int ret;
 
 	ret = pm_runtime_get_sync(dev);
-	if (WARN_ON(ret < 0 && ret != -EACCES)) {
-		pm_runtime_put_autosuspend(dev);
-		return;
+	if (ret < 0 && ret != -EACCES) {
+		if (WARN_ON(!drm->lost)) {
+			pm_runtime_put_autosuspend(dev);
+			return;
+		}
 	}
 
 	ttm_bo_fini(&nvbo->bo);
@@ -204,7 +206,7 @@ nouveau_gem_object_close(struct drm_gem_object *gem, struct drm_file *file_priv)
 	if (vma) {
 		if (--vma->refs == 0) {
 			ret = pm_runtime_get_sync(dev);
-			if (!WARN_ON(ret < 0 && ret != -EACCES)) {
+			if (!WARN_ON(ret < 0 && ret != -EACCES && !drm->lost)) {
 				nouveau_gem_object_unmap(nvbo, vma);
 				pm_runtime_mark_last_busy(dev);
 			}

@@ -429,6 +429,9 @@ nouveau_display_hpd_work(struct work_struct *work)
 	int changed = 0;
 	struct drm_connector *first_changed_connector = NULL;
 
+	if (drm->lost)
+		return;
+
 	pm_runtime_get_sync(dev->dev);
 
 	spin_lock_irq(&drm->hpd_lock);

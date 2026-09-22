@@ -1759,7 +1759,23 @@ r535_gsp_sr_free(struct nvkm_gsp *gsp)
 	nvkm_gsp_mem_dtor(&gsp->sr.meta);
 	nvkm_gsp_radix3_dtor(gsp, &gsp->sr.radix3);
 	nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.sgt);
+	nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.fbsr);
 	gsp->sr.retired = false;
+}
+
+void
+r535_gsp_dead(struct nvkm_gsp *gsp)
+{
+	mutex_lock(&gsp->cmdq.mutex);
+	gsp->dead = true;
+	mutex_unlock(&gsp->cmdq.mutex);
+}
+
+void
+r535_gsp_lost(struct nvkm_gsp *gsp)
+{
+	r535_gsp_dead(gsp);
+	r535_gsp_sr_free(gsp);
 }
 
 int
@@ -1844,15 +1860,14 @@ r535_gsp_init(struct nvkm_gsp *gsp)
 
 done:
 	if (gsp->sr.meta.data) {
-		gsp->rm->api->fbsr->resume(gsp);
-
 		if (ret) {
 			gsp->sr.retired = true;
 			return ret;
 		}
 
+		gsp->rm->api->fbsr->resume(gsp);
 		r535_gsp_sr_free(gsp);
-		return ret;
+		return 0;
 	}
 
 	if (ret == 0)

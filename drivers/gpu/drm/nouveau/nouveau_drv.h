@@ -232,6 +232,9 @@ struct nouveau_drm {
 	 */
 	unsigned int gcx_deferrals;
 
+	bool lost;
+	struct work_struct lost_work;
+
 	struct {
 		struct agp_bridge_data *bridge;
 		u32 base;

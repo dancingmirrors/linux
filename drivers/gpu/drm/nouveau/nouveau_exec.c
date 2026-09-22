@@ -133,6 +133,9 @@ nouveau_exec_job_run(struct nouveau_job *job)
 	struct nouveau_fence *fence = exec_job->fence;
 	int i, ret;
 
+	if (atomic_read(&chan->killed))
+		return ERR_PTR(-ENODEV);
+
 	ret = nvif_chan_gpfifo_wait(&chan->chan, exec_job->push.count + 1, 16);
 	if (ret) {
 		NV_PRINTK(err, job->cli, "nv50cal_space: %d\n", ret);

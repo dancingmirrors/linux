@@ -76,6 +76,9 @@ nvkm_instobj_dtor(struct nvkm_instmem *imem, struct nvkm_instobj *iobj)
 	spin_lock(&imem->lock);
 	list_del(&iobj->head);
 	spin_unlock(&imem->lock);
+
+	kvfree(iobj->suspend);
+	iobj->suspend = NULL;
 }
 
 void

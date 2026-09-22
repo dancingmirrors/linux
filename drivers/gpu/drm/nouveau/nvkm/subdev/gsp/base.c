@@ -65,6 +65,7 @@ nvkm_gsp_init(struct nvkm_subdev *subdev)
 {
 	struct nvkm_gsp *gsp = nvkm_gsp(subdev);
 	struct nvkm_timer *tmr = subdev->device->timer;
+	int ret;
 
 	if (!gsp->func->init)
 		return 0;
@@ -72,7 +73,12 @@ nvkm_gsp_init(struct nvkm_subdev *subdev)
 	if (nvkm_gsp_rm(gsp) && tmr)
 		nvkm_timer_set(tmr, ktime_get_real_ns());
 
-	return gsp->func->init(gsp);
+	ret = gsp->func->init(gsp);
+	if (ret && nvkm_gsp_rm(gsp) && !gsp->running) {
+		r535_gsp_dead(gsp);
+	}
+
+	return ret;
 }
 
 static int
