@@ -88,6 +88,37 @@ gh100_gsp_fmc_error(struct nvkm_gsp *gsp)
 	return true;
 }
 
+static int
+gh100_gsp_wait_target_mask(struct nvkm_gsp *gsp)
+{
+	int time = 4000;
+
+	do {
+		u32 hwcfg2 = nvkm_falcon_rd32(&gsp->falcon, NV_PFALCON_FALCON_HWCFG2);
+
+		if (hwcfg2 && (hwcfg2 & 0xffffff00) != 0xbadf4100)
+			return 0;
+
+		usleep_range(1000, 2000);
+	} while (time--);
+
+	nvkm_error(&gsp->subdev, "FSP never released GSP's target mask\n");
+	return -ETIMEDOUT;
+}
+
+static void
+gh100_gsp_boot_failed(struct nvkm_gsp *gsp)
+{
+	struct nvkm_falcon *falcon = &gsp->falcon;
+
+	nvkm_error(&gsp->subdev, "GSP-RM didn't boot: cpuctl %08x, mbox %08x %08x\n",
+		   nvkm_falcon_rd32(falcon, falcon->addr2 + NV_PRISCV_RISCV_CPUCTL),
+		   nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX0),
+		   nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX1));
+
+	gh100_gsp_fmc_error(gsp);
+}
+
 static bool
 gh100_gsp_lockdown_released(struct nvkm_gsp *gsp, u32 *mbox0)
 {
@@ -108,8 +139,13 @@ gh100_gsp_lockdown_released(struct nvkm_gsp *gsp, u32 *mbox0)
 			return true;
 	}
 
-	/* Check if lockdown has been released. */
+	/* Check if lockdown has been released. An all-zero read means the
+	 * register didn't reach GSP, not that every bit in it is clear.
+	 */
 	data = nvkm_falcon_rd32(&gsp->falcon, NV_PFALCON_FALCON_HWCFG2);
+	if (!data)
+		return false;
+
 	return !NVVAL_GET(data, NV_PFALCON, FALCON_HWCFG2, RISCV_BR_PRIV_LOCKDOWN);
 }
 
@@ -164,6 +200,12 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 		return ret;
 	}
 
+	ret = gh100_gsp_wait_target_mask(gsp);
+	if (ret) {
+		gh100_gsp_fmc_error(gsp);
+		return ret;
+	}
+
 	do {
 		if (gh100_gsp_lockdown_released(gsp, &mbox0))
 			break;
@@ -186,7 +228,11 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 	if (gh100_gsp_fmc_error(gsp))
 		return -EIO;
 
-	return r535_gsp_init(gsp);
+	ret = r535_gsp_init(gsp);
+	if (ret)
+		gh100_gsp_boot_failed(gsp);
+
+	return ret;
 }
 
 static int

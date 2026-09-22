@@ -232,6 +232,15 @@ struct nouveau_drm {
 	 */
 	unsigned int gcx_deferrals;
 
+	struct {
+		unsigned int cycles;
+		unsigned long suspended_at;
+		bool gc6, gcoff;
+		int gcx_ret;
+	} rpm;
+
+	bool rpm_pci_ref;
+
 	bool lost;
 	struct work_struct lost_work;
 

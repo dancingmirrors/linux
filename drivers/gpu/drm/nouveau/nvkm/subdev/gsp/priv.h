@@ -90,6 +90,7 @@ int gh100_gsp_init(struct nvkm_gsp *);
 int gh100_gsp_fini(struct nvkm_gsp *, enum nvkm_suspend_state suspend);
 
 void r535_gsp_dtor(struct nvkm_gsp *);
+void r535_gsp_msgq_init(struct nvkm_gsp *);
 int r535_gsp_oneinit(struct nvkm_gsp *);
 int r535_gsp_init(struct nvkm_gsp *);
 int r535_gsp_fini(struct nvkm_gsp *, enum nvkm_suspend_state suspend);

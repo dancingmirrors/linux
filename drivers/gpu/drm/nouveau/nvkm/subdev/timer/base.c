@@ -44,8 +44,10 @@ nvkm_timer_wait_test(struct nvkm_timer_wait *wait)
 	if (wait->time1 == time) {
 		if (wait->reads++ == 16) {
 			nvkm_fatal(subdev, "stalled at %016llx\n", time);
-			if (time == ~0ULL)
+			if (time == ~0ULL) {
 				wait->tmr->dead = true;
+				wait->dead = true;
+			}
 			return -ETIMEDOUT;
 		}
 	} else {

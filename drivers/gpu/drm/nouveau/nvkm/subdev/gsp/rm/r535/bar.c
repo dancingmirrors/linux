@@ -70,11 +70,13 @@ r535_bar_bar2_fini(struct nvkm_bar *bar)
 {
 	struct nvkm_vmm *vmm = gf100_bar(bar)->bar[0].vmm;
 	struct nvkm_gsp *gsp = bar->subdev.device->gsp;
+	int ret;
 
 	bar->flushBAR2 = bar->flushBAR2PhysMode;
 	nvkm_done(bar->flushFBZero);
 
-	WARN_ON(r535_bar_bar2_update_pde(gsp, vmm->func->page[0].shift, 0));
+	ret = r535_bar_bar2_update_pde(gsp, vmm->func->page[0].shift, 0);
+	WARN_ON(ret && !gsp->dead);
 }
 
 static void

@@ -21,6 +21,7 @@
  */
 #include <rm/rpc.h>
 
+#include "nvrm/msgfn.h"
 #include "nvrm/rpcfn.h"
 
 #define GSP_MSG_MIN_SIZE GSP_PAGE_SIZE
@@ -164,9 +165,14 @@ r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 gsp_rpc_len, int *ptime)
 		usleep_range(1, 2);
 	} while (--(*ptime));
 
-	if (WARN_ON(!*ptime)) {
+	if (!*ptime) {
 		nvkm_error(&gsp->subdev,
 			   "GSP-RM is not responding, no further RPCs will be sent\n");
+		nvkm_error(&gsp->subdev,
+			   "msgq: rptr %u wptr %u cnt %u, mbox %08x %08x\n",
+			   rptr, *gsp->msgq.wptr, gsp->msgq.cnt,
+			   nvkm_falcon_rd32(&gsp->falcon, 0x040),
+			   nvkm_falcon_rd32(&gsp->falcon, 0x044));
 		gsp->dead = true;
 		return -ETIMEDOUT;
 	}
@@ -452,14 +458,31 @@ r535_gsp_msg_done(struct nvkm_gsp *gsp, struct nvfw_gsp_rpc *msg)
 static void
 r535_gsp_msg_dump(struct nvkm_gsp *gsp, struct nvfw_gsp_rpc *msg, int lvl)
 {
-	if (gsp->subdev.debug >= lvl) {
+	const u8 *data = msg->data;
+	size_t len = msg->length - sizeof(*msg);
+
+	if (gsp->subdev.debug < lvl)
+		return;
+
+	if (lvl <= NV_DBG_ERROR)
+		nvkm_printk__(&gsp->subdev, lvl, err,
+			      "msg fn:%d len:0x%x/0x%zx res:0x%x resp:0x%x\n",
+			      msg->function, msg->length, len,
+			      msg->rpc_result, msg->rpc_result_private);
+	else
 		nvkm_printk__(&gsp->subdev, lvl, info,
 			      "msg fn:%d len:0x%x/0x%zx res:0x%x resp:0x%x\n",
-			      msg->function, msg->length, msg->length - sizeof(*msg),
+			      msg->function, msg->length, len,
 			      msg->rpc_result, msg->rpc_result_private);
-		print_hex_dump(KERN_INFO, "msg: ", DUMP_PREFIX_OFFSET, 16, 1,
-			       msg->data, msg->length - sizeof(*msg), true);
-	}
+
+	while (len && !data[len - 1])
+		len--;
+
+	if (!len || (lvl > NV_DBG_ERROR && gsp->subdev.debug < NV_DBG_DEBUG))
+		return;
+
+	print_hex_dump(KERN_INFO, "msg: ", DUMP_PREFIX_OFFSET, 16, 1,
+		       data, len, true);
 }
 
 struct nvfw_gsp_rpc *
@@ -479,8 +502,23 @@ retry:
 		return rpc;
 
 	if (rpc->rpc_result) {
+		u32 function = rpc->function;
+		u32 result = rpc->rpc_result;
+
 		r535_gsp_msg_dump(gsp, rpc, NV_DBG_ERROR);
 		r535_gsp_msg_done(gsp, rpc);
+
+		if (function > NV_VGPU_MSG_EVENT_FIRST_EVENT &&
+		    r535_rpc_status_to_errno(result) == -EBUSY) {
+			nvkm_error(subdev,
+				   "event fn:%d isn't ready yet (0x%x), still waiting\n",
+				   function, result);
+			if (fn)
+				goto retry;
+
+			return NULL;
+		}
+
 		return ERR_PTR(-EINVAL);
 	}
 

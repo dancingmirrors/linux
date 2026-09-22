@@ -51,9 +51,15 @@ r535_gsp_msgq_work(struct work_struct *work)
 	struct nvkm_gsp *gsp = container_of(work, typeof(*gsp), msgq.work);
 
 	mutex_lock(&gsp->cmdq.mutex);
-	if (*gsp->msgq.rptr != *gsp->msgq.wptr)
+	if (gsp->running && *gsp->msgq.rptr != *gsp->msgq.wptr)
 		r535_gsp_msg_recv(gsp, 0, 0);
 	mutex_unlock(&gsp->cmdq.mutex);
+}
+
+void
+r535_gsp_msgq_init(struct nvkm_gsp *gsp)
+{
+	INIT_WORK(&gsp->msgq.work, r535_gsp_msgq_work);
 }
 
 static irqreturn_t
@@ -310,8 +316,6 @@ r535_gsp_postinit(struct nvkm_gsp *gsp)
 	ret = rmapi->gsp->get_static_info(gsp);
 	if (WARN_ON(ret))
 		return ret;
-
-	INIT_WORK(&gsp->msgq.work, r535_gsp_msgq_work);
 
 	ret = r535_gsp_intr_get_table(gsp);
 	if (WARN_ON(ret))
@@ -1823,16 +1827,26 @@ r535_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 	}
 
 	ret = r535_gsp_rpc_unloading_guest_driver(gsp, suspend);
-	if (WARN_ON(ret))
-		return ret;
+	if (ret) {
+		WARN_ON(!gsp->dead);
+		goto done;
+	}
 
-	nvkm_msec(gsp->subdev.device, 2000,
-		if (nvkm_falcon_rd32(&gsp->falcon, 0x040) == 0x80000000)
+	if (nvkm_msec(gsp->subdev.device, 2000,
+		NVKM_DELAY;
+		if (nvkm_falcon_rd32(&gsp->falcon, 0x040) & 0x80000000)
 			break;
-	);
+	) < 0) {
+		nvkm_error(&gsp->subdev,
+			   "GSP-RM didn't report its processor suspended (mbox0 %08x)\n",
+			   nvkm_falcon_rd32(&gsp->falcon, 0x040));
+	}
 
+done:
 	gsp->running = false;
-	return 0;
+
+	cancel_work_sync(&gsp->msgq.work);
+	return ret;
 }
 
 int
@@ -1844,6 +1858,8 @@ r535_gsp_init(struct nvkm_gsp *gsp)
 
 	if (WARN_ON(!nvkm_falcon_riscv_active(&gsp->falcon)))
 		return -EIO;
+
+	cancel_work_sync(&gsp->msgq.work);
 
 	mutex_lock(&gsp->cmdq.mutex);
 	gsp->dead = false;
@@ -1867,11 +1883,12 @@ done:
 
 		gsp->rm->api->fbsr->resume(gsp);
 		r535_gsp_sr_free(gsp);
-		return 0;
+	} else if (ret == 0) {
+		ret = r535_gsp_postinit(gsp);
 	}
 
 	if (ret == 0)
-		ret = r535_gsp_postinit(gsp);
+		schedule_work(&gsp->msgq.work);
 
 	return ret;
 }
@@ -2169,6 +2186,11 @@ r535_gsp_dtor(struct nvkm_gsp *gsp)
 {
 	idr_destroy(&gsp->client_id.idr);
 	mutex_destroy(&gsp->client_id.mutex);
+
+	/* The worker dereferences gsp->cmdq.mutex and gsp->shm.mem, both
+	 * destroyed below.
+	 */
+	cancel_work_sync(&gsp->msgq.work);
 
 	r535_gsp_sr_free(gsp);
 

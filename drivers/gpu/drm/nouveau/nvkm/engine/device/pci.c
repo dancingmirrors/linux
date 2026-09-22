@@ -1632,7 +1632,10 @@ static void *
 nvkm_device_pci_dtor(struct nvkm_device *device)
 {
 	struct nvkm_device_pci *pdev = nvkm_device_pci(device);
-	pci_disable_device(pdev->pdev);
+
+	if (pci_is_enabled(pdev->pdev))
+		pci_disable_device(pdev->pdev);
+
 	return pdev;
 }
 

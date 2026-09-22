@@ -27,6 +27,8 @@
 void
 r535_mmu_vaspace_del(struct nvkm_vmm *vmm)
 {
+	struct nvkm_gsp *gsp = vmm->mmu->subdev.device->gsp;
+
 	if (vmm->rm.external) {
 		NV0080_CTRL_DMA_UNSET_PAGE_DIRECTORY_PARAMS *ctrl;
 
@@ -34,9 +36,12 @@ r535_mmu_vaspace_del(struct nvkm_vmm *vmm)
 					    NV0080_CTRL_CMD_DMA_UNSET_PAGE_DIRECTORY,
 					    sizeof(*ctrl));
 		if (!IS_ERR(ctrl)) {
+			int ret;
+
 			ctrl->hVASpace = vmm->rm.object.handle;
 
-			WARN_ON(nvkm_gsp_rm_ctrl_wr(&vmm->rm.device.object, ctrl));
+			ret = nvkm_gsp_rm_ctrl_wr(&vmm->rm.device.object, ctrl);
+			WARN_ON(ret && !gsp->dead);
 		}
 
 		vmm->rm.external = false;

@@ -149,6 +149,8 @@ nvkm_gsp_new_(const struct nvkm_gsp_fwif *fwif, struct nvkm_device *device,
 
 	nvkm_subdev_ctor(&nvkm_gsp, device, type, inst, &gsp->subdev);
 
+	r535_gsp_msgq_init(gsp);
+
 	fwif = nvkm_firmware_load(&gsp->subdev, fwif, "Gsp", gsp);
 	if (IS_ERR(fwif)) {
 		nvkm_error(&gsp->subdev, "Failed to load required firmware for device.");

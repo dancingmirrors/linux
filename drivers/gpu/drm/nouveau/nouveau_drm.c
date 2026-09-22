@@ -898,6 +898,8 @@ static int nouveau_drm_probe(struct pci_dev *pdev,
 	if (ret)
 		goto fail_drm;
 
+	drm->rpm_pci_ref = true;
+
 	ret = nouveau_drm_device_init(drm);
 	if (ret)
 		goto fail_pci;
@@ -942,7 +944,9 @@ nouveau_drm_remove(struct pci_dev *pdev)
 	if (drm->old_pm_cap)
 		pdev->pm_cap = drm->old_pm_cap;
 	nouveau_drm_device_remove(drm);
-	pci_disable_device(pdev);
+
+	if (pci_is_enabled(pdev))
+		pci_disable_device(pdev);
 }
 
 static int
@@ -1124,7 +1128,12 @@ static void
 nouveau_pmops_lost(struct nouveau_drm *drm, struct pci_dev *pdev)
 {
 	nouveau_drm_lost(drm);
-	pci_disable_device(pdev);
+
+	if (drm->rpm_pci_ref) {
+		pci_disable_device(pdev);
+		drm->rpm_pci_ref = false;
+	}
+
 	pci_set_power_state(pdev, PCI_D3hot);
 	nouveau_drm_lost_off(drm);
 }
@@ -1165,6 +1174,7 @@ nouveau_pmops_resume(struct device *dev)
 	ret = pci_enable_device(pdev);
 	if (ret)
 		return ret;
+	drm->rpm_pci_ref = true;
 	pci_set_master(pdev);
 
 	ret = nouveau_do_resume(drm, false);
@@ -1259,6 +1269,9 @@ nouveau_gcoff_ready(struct nouveau_drm *drm)
 		return true;
 
 	ret = r535_gsp_gcx_ready(gsp, &gc6, &gcoff);
+	drm->rpm.gcx_ret = ret;
+	drm->rpm.gc6 = !ret && gc6;
+	drm->rpm.gcoff = !ret && gcoff;
 	if (ret) {
 		NV_DEBUG(drm, "gcx: prerequisite query failed (%d)\n", ret);
 		goto ready;
@@ -1296,13 +1309,17 @@ ready:
 static void
 nouveau_pmops_runtime_off(struct nouveau_drm *drm, struct pci_dev *pdev)
 {
-	if (pci_is_enabled(pdev)) {
-		pci_save_state(pdev);
+	pci_save_state(pdev);
+
+	if (drm->rpm_pci_ref) {
 		pci_disable_device(pdev);
+		drm->rpm_pci_ref = false;
 	}
+
 	pci_ignore_hotplug(pdev);
 	pci_set_power_state(pdev, PCI_D3cold);
 	drm->dev->switch_power_state = DRM_SWITCH_POWER_DYNAMIC_OFF;
+	drm->rpm.suspended_at = jiffies;
 
 	if (drm->lost)
 		nouveau_drm_lost_off(drm);
@@ -1365,11 +1382,17 @@ nouveau_pmops_runtime_resume(struct device *dev)
 	ret = pci_enable_device(pdev);
 	if (ret)
 		return ret;
+	drm->rpm_pci_ref = true;
 	pci_set_master(pdev);
 
 	ret = nouveau_do_resume(drm, true);
 	if (ret) {
 		NV_ERROR(drm, "resume failed with: %d\n", ret);
+		NV_ERROR(drm, "runpm: cycle %u, %ums in D3cold, gcx gc6:%d gcoff:%d (query %d), %u deferrals\n",
+			 drm->rpm.cycles + 1,
+			 jiffies_to_msecs(jiffies - drm->rpm.suspended_at),
+			 drm->rpm.gc6, drm->rpm.gcoff, drm->rpm.gcx_ret,
+			 drm->gcx_deferrals);
 		nouveau_drm_lost(drm);
 
 		nouveau_switcheroo_optimus_dsm();
@@ -1380,6 +1403,7 @@ nouveau_pmops_runtime_resume(struct device *dev)
 	/* do magic */
 	nvif_mask(&device->object, 0x088488, (1 << 25), (1 << 25));
 	drm->dev->switch_power_state = DRM_SWITCH_POWER_ON;
+	drm->rpm.cycles++;
 
 	/* Monitors may have been connected / disconnected during suspend */
 	nouveau_display_hpd_resume(drm);
