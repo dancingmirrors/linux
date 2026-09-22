@@ -2518,6 +2518,9 @@ struct xe_lrc_snapshot *xe_lrc_snapshot_capture(struct xe_lrc *lrc)
 	snapshot->replay_offset = 0;
 	snapshot->replay_size = lrc->replay_size;
 	snapshot->lrc_snapshot = NULL;
+	snapshot->ring_offset = __xe_lrc_ring_offset(lrc);
+	snapshot->ring_size = lrc->ring.size;
+	snapshot->ring_snapshot = NULL;
 	snapshot->ctx_timestamp = xe_lrc_ctx_timestamp(lrc);
 	snapshot->ctx_timestamp_ms =
 		xe_gt_clock_interval_to_ms(lrc->gt, xe_lrc_ctx_timestamp(lrc));
@@ -2548,15 +2551,23 @@ void xe_lrc_snapshot_capture_delayed(struct xe_lrc_snapshot *snapshot)
 	if (!snapshot->lrc_snapshot)
 		goto put_bo;
 
+	snapshot->ring_snapshot = kvmalloc(snapshot->ring_size, GFP_KERNEL);
+
 	xe_bo_lock(bo, false);
 	if (!ttm_bo_vmap(&bo->ttm, &src)) {
 		xe_map_memcpy_from(xe_bo_device(bo),
 				   snapshot->lrc_snapshot, &src, snapshot->lrc_offset,
 				   snapshot->lrc_size);
+		if (snapshot->ring_snapshot)
+			xe_map_memcpy_from(xe_bo_device(bo),
+					   snapshot->ring_snapshot, &src,
+					   snapshot->ring_offset, snapshot->ring_size);
 		ttm_bo_vunmap(&bo->ttm, &src);
 	} else {
 		kvfree(snapshot->lrc_snapshot);
 		snapshot->lrc_snapshot = NULL;
+		kvfree(snapshot->ring_snapshot);
+		snapshot->ring_snapshot = NULL;
 	}
 	xe_bo_unlock(bo);
 put_bo:
@@ -2586,6 +2597,18 @@ void xe_lrc_snapshot_print(struct xe_lrc_snapshot *snapshot, struct drm_printer 
 	drm_printf(p, "\tQueue Timestamp: 0x%016llx\n", snapshot->queue_timestamp);
 	drm_printf(p, "\tQueue Timestamp ms: %llu\n", snapshot->queue_timestamp_ms);
 	drm_printf(p, "\tJob Timestamp: 0x%08x\n", snapshot->ctx_job_timestamp);
+
+	if (snapshot->ring_snapshot) {
+		drm_printf(p, "\t[RING].length: 0x%lx\n", snapshot->ring_size);
+		drm_puts(p, "\t[RING].data: ");
+		for (i = 0; i < snapshot->ring_size; i += sizeof(u32)) {
+			u32 *val = snapshot->ring_snapshot + i;
+			char dumped[ASCII85_BUFSZ];
+
+			drm_puts(p, ascii85_encode(*val, dumped));
+		}
+		drm_puts(p, "\n");
+	}
 
 	if (!snapshot->lrc_snapshot)
 		return;
@@ -2619,6 +2642,7 @@ void xe_lrc_snapshot_free(struct xe_lrc_snapshot *snapshot)
 		return;
 
 	kvfree(snapshot->lrc_snapshot);
+	kvfree(snapshot->ring_snapshot);
 	if (snapshot->lrc_bo)
 		xe_bo_put(snapshot->lrc_bo);
 

@@ -32,6 +32,8 @@ struct xe_lrc_snapshot {
 	void *lrc_snapshot;
 	unsigned long lrc_size, lrc_offset;
 	unsigned long replay_size, replay_offset;
+	void *ring_snapshot;
+	unsigned long ring_size, ring_offset;
 
 	u32 context_desc;
 	u32 ring_addr;

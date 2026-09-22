@@ -78,13 +78,14 @@ struct xe_guc_submit_exec_queue_snapshot {
 	/** @refcount: ref count of this exec queue */
 	u32 refcount;
 	/**
-	 * @sched_timeout: the time after which a job is removed from the
-	 * scheduler.
+	 * @sched_timeout: the time, in jiffies, after which a job is removed
+	 * from the scheduler. Zero means the TDR was queued immediately.
 	 */
 	long sched_timeout;
 
 	/** @sched_props: scheduling properties */
 	struct {
+		u32 job_timeout_ms;
 		/** @sched_props.timeslice_us: timeslice period in micro-seconds */
 		u32 timeslice_us;
 		/** @sched_props.preempt_timeout_us: preemption timeout in micro-seconds */
