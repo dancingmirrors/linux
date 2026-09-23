@@ -170,7 +170,7 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 	slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
 
 	if (gb20x && slices && ctrl->comprPageSize)
-		dflt = 448ULL * slices * ctrl->comprPageSize;
+		dflt = 256ULL * slices * ctrl->comprPageSize;
 
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
 
