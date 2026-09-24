@@ -147,8 +147,11 @@ nouveau_bo_comp_charge(struct nouveau_drm *drm, struct nouveau_bo *nvbo,
 
 	old = atomic64_read(&gsp->fb.comp.used);
 	do {
-		if (old + size > gsp->fb.comp.limit)
+		if (old + size > gsp->fb.comp.limit) {
+			NV_DEBUG(drm, "comp: budget exhausted, denied %llu KiB (%lld/%llu KiB)\n",
+				 size >> 10, old >> 10, gsp->fb.comp.limit >> 10);
 			return false;
+		}
 	} while (!atomic64_try_cmpxchg(&gsp->fb.comp.used, &old, old + size));
 
 	nvbo->comp_charged = size;
@@ -382,9 +385,6 @@ nouveau_bo_alloc(struct nouveau_cli *cli, u64 *size, int *align, u32 domain,
 			nvbo->kind = mmu->kind[nvbo->kind];
 		nvbo->comp = 0;
 		nvbo->comp_denied = true;
-
-		NV_INFO_ONCE(drm, "comp: budget exhausted, buffer denied "
-			     "compression (%llu KiB)\n", *size >> 10);
 	}
 
 	return nvbo;
