@@ -13,7 +13,7 @@
 #include "nouveau_abi16.h"
 #include "nouveau_sched.h"
 
-#define NOUVEAU_SCHED_JOB_TIMEOUT_MS		10000
+#define NOUVEAU_SCHED_JOB_TIMEOUT_MS		60000
 
 /* Starts at 0, since the DRM scheduler interprets those parameters as (initial)
  * index to the run-queue array.
