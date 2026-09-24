@@ -5849,7 +5849,7 @@ DECLARE_PCI_FIXUP_CLASS_FINAL(PCI_VENDOR_ID_ATI, PCI_ANY_ID,
  * Enable the NVIDIA GPU integrated HDA controller if the BIOS left it
  * disabled.  https://devtalk.nvidia.com/default/topic/1024022
  */
-static void quirk_nvidia_hda(struct pci_dev *gpu)
+static void __quirk_nvidia_hda(struct pci_dev *gpu, bool resume_early)
 {
 	u8 hdr_type;
 	u32 val;
@@ -5863,17 +5863,32 @@ static void quirk_nvidia_hda(struct pci_dev *gpu)
 	if (val & BIT(25))
 		return;
 
-	pci_info(gpu, "Enabling HDA controller\n");
+	if (resume_early)
+		pci_dbg(gpu, "Enabling HDA controller\n");
+	else
+		pci_info(gpu, "Enabling HDA controller\n");
+
 	pci_write_config_dword(gpu, 0x488, val | BIT(25));
 
 	/* The GPU becomes a multi-function device when the HDA is enabled */
 	pci_read_config_byte(gpu, PCI_HEADER_TYPE, &hdr_type);
 	gpu->multifunction = FIELD_GET(PCI_HEADER_TYPE_MFD, hdr_type);
 }
+
+static void quirk_nvidia_hda(struct pci_dev *gpu)
+{
+	__quirk_nvidia_hda(gpu, false);
+}
 DECLARE_PCI_FIXUP_CLASS_HEADER(PCI_VENDOR_ID_NVIDIA, PCI_ANY_ID,
 			       PCI_BASE_CLASS_DISPLAY, 16, quirk_nvidia_hda);
+
+static void quirk_nvidia_hda_resume_early(struct pci_dev *gpu)
+{
+	__quirk_nvidia_hda(gpu, true);
+}
 DECLARE_PCI_FIXUP_CLASS_RESUME_EARLY(PCI_VENDOR_ID_NVIDIA, PCI_ANY_ID,
-			       PCI_BASE_CLASS_DISPLAY, 16, quirk_nvidia_hda);
+			       PCI_BASE_CLASS_DISPLAY, 16,
+			       quirk_nvidia_hda_resume_early);
 
 /*
  * Some IDT switches incorrectly flag an ACS Source Validation error on
