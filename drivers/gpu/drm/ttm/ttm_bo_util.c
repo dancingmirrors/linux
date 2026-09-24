@@ -192,7 +192,7 @@ int ttm_bo_move_memcpy(struct ttm_buffer_object *bo,
 
 	if (!src_iter->ops->maps_tt)
 		ttm_kmap_iter_linear_io_fini(&_src_iter.io, bdev, src_mem);
-	ttm_bo_move_sync_cleanup(bo, dst_mem);
+	ret = ttm_bo_move_sync_cleanup(bo, dst_mem);
 
 out_src_iter:
 	if (!dst_iter->ops->maps_tt)
@@ -733,9 +733,14 @@ EXPORT_SYMBOL(ttm_bo_move_accel_cleanup);
  *
  * Special case of ttm_bo_move_accel_cleanup where the bo is guaranteed
  * by the caller to be idle. Typically used after memcpy buffer moves.
+ *
+ * Return: 0 on success, or a negative error code if the bo did not become
+ * idle after all. In that case the bo keeps its old placement and @new_mem
+ * is untouched, so the move has failed and the caller must report it as
+ * such rather than let the bo be treated as living in @new_mem.
  */
-void ttm_bo_move_sync_cleanup(struct ttm_buffer_object *bo,
-			      struct ttm_resource *new_mem)
+int ttm_bo_move_sync_cleanup(struct ttm_buffer_object *bo,
+			     struct ttm_resource *new_mem)
 {
 	struct ttm_resource_manager *man =
 		ttm_manager_type(bo->bdev, new_mem->mem_type);
@@ -743,9 +748,10 @@ void ttm_bo_move_sync_cleanup(struct ttm_buffer_object *bo,
 
 	ret = ttm_bo_wait_free_node(bo, man->use_tt);
 	if (WARN_ON(ret))
-		return;
+		return ret;
 
 	ttm_bo_assign_mem(bo, new_mem);
+	return 0;
 }
 EXPORT_SYMBOL(ttm_bo_move_sync_cleanup);
 

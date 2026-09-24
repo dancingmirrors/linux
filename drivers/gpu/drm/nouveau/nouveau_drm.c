@@ -117,6 +117,11 @@ MODULE_PARM_DESC(recover,
 static int nouveau_recover = 3;
 module_param_named(recover, nouveau_recover, int, 0600);
 
+MODULE_PARM_DESC(runpm_vram_threshold,
+		 "keep the GPU awake while more than this many MiB of VRAM are in use, as runtime suspend has to evict all of it (0 = never, default 256)");
+static unsigned int nouveau_runpm_vram_threshold = 256;
+module_param_named(runpm_vram_threshold, nouveau_runpm_vram_threshold, uint, 0600);
+
 static struct drm_driver driver_stub;
 static struct drm_driver driver_pci;
 static struct drm_driver driver_platform;
@@ -978,7 +983,15 @@ nouveau_do_suspend(struct nouveau_drm *drm, bool runtime)
 	NV_DEBUG(drm, "evicting buffers...\n");
 
 	man = ttm_manager_type(&drm->ttm.bdev, TTM_PL_VRAM);
-	ttm_resource_manager_evict_all(&drm->ttm.bdev, man);
+	ret = ttm_resource_manager_evict_all(&drm->ttm.bdev, man);
+	if (ret) {
+		NV_ERROR(drm, "failed to evict VRAM, not suspending: %d\n", ret);
+		if (runtime) {
+			pm_runtime_mark_last_busy(dev->dev);
+			ret = -EBUSY;
+		}
+		goto fail_display;
+	}
 
 	NV_DEBUG(drm, "waiting for kernel channels to go idle...\n");
 	if (drm->cechan) {
@@ -1020,6 +1033,10 @@ fail_display:
 		NV_DEBUG(drm, "resuming display...\n");
 		nouveau_display_resume(dev, runtime);
 	}
+
+	nouveau_led_resume(dev);
+	nouveau_dmem_resume(drm);
+	nouveau_svm_resume(drm);
 	return ret;
 }
 
@@ -1484,6 +1501,36 @@ ready:
 	return true;
 }
 
+static bool
+nouveau_pmops_runtime_vram_idle(struct nouveau_drm *drm)
+{
+	struct ttm_resource_manager *man =
+		ttm_manager_type(&drm->ttm.bdev, TTM_PL_VRAM);
+	u64 threshold = (u64)READ_ONCE(nouveau_runpm_vram_threshold) << 20;
+	u64 used;
+
+	if (!man)
+		return true;
+
+	used = ttm_resource_manager_usage(man);
+	if (!threshold || used <= threshold) {
+		if (drm->rpm.vram_hold) {
+			NV_INFO(drm, "runpm: %llu MiB of VRAM in use, runtime suspend permitted\n",
+				used >> 20);
+			drm->rpm.vram_hold = false;
+		}
+		return true;
+	}
+
+	if (!drm->rpm.vram_hold) {
+		NV_INFO(drm, "runpm: %llu MiB of VRAM in use, runtime suspend denied (threshold %llu MiB)\n",
+			used >> 20, threshold >> 20);
+		drm->rpm.vram_hold = true;
+	}
+
+	return false;
+}
+
 static void
 nouveau_pmops_runtime_off(struct nouveau_drm *drm, struct pci_dev *pdev)
 {
@@ -1519,6 +1566,11 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 		nouveau_switcheroo_optimus_dsm();
 		nouveau_pmops_runtime_off(drm, pdev);
 		return 0;
+	}
+
+	if (!nouveau_pmops_runtime_vram_idle(drm)) {
+		pm_runtime_mark_last_busy(dev);
+		return -EBUSY;
 	}
 
 	if (!nouveau_gcoff_ready(drm)) {

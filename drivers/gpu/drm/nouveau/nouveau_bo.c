@@ -32,6 +32,7 @@
 
 #include "nouveau_drv.h"
 #include "nouveau_chan.h"
+#include "nouveau_dma.h"
 #include "nouveau_fence.h"
 
 #include <subdev/gsp.h>
@@ -981,6 +982,54 @@ done:
 	return ret;
 }
 
+#define NOUVEAU_BO_MOVE_WARN_MS		15000
+#define NOUVEAU_BO_MOVE_TIMEOUT_MS	60000
+
+/* XXX */
+static bool
+nouveau_bo_move_wait(struct nouveau_drm *drm, struct nouveau_channel *chan,
+		     struct nouveau_fence *fence)
+{
+	unsigned long start = jiffies;
+	bool warned = false;
+
+	while (!nouveau_fence_done(fence)) {
+		unsigned int ms = jiffies_to_msecs(jiffies - start);
+
+		if (ms >= NOUVEAU_BO_MOVE_TIMEOUT_MS) {
+			NV_ERROR(drm, "copy engine transfer not done after %u seconds, giving up on the copy engine\n",
+				 ms / 1000);
+			nouveau_channel_kill(chan);
+			return false;
+		}
+
+		if (!warned && ms >= NOUVEAU_BO_MOVE_WARN_MS) {
+			NV_WARN(drm, "copy engine transfer not done after %u seconds, still waiting\n",
+				ms / 1000);
+			warned = true;
+		}
+
+		dma_fence_wait_timeout(&fence->base, false, HZ);
+	}
+
+	return true;
+}
+
+static void
+nouveau_bo_move_abandon(struct nouveau_drm *drm, struct nouveau_channel *chan,
+			struct ttm_buffer_object *bo)
+{
+	struct nouveau_mem *mem = nouveau_mem(bo->resource);
+
+	chan->chan.push.cur = chan->chan.push.bgn;
+	WIND_RING(chan);
+
+	if (drm->client.device.info.family >= NV_DEVICE_INFO_V0_TESLA) {
+		nvif_vmm_put(&drm->client.vmm.vmm, &mem->vma[1]);
+		nvif_vmm_put(&drm->client.vmm.vmm, &mem->vma[0]);
+	}
+}
+
 static int
 nouveau_bo_move_m2mf(struct ttm_buffer_object *bo, int evict,
 		     struct ttm_operation_ctx *ctx,
@@ -1011,27 +1060,33 @@ nouveau_bo_move_m2mf(struct ttm_buffer_object *bo, int evict,
 	if (ret)
 		goto out_unlock;
 
+	ret = nouveau_fence_create(&fence, chan);
+	if (ret)
+		goto out_unlock;
+
 	ret = drm->ttm.move(chan, bo, bo->resource, new_reg);
-	if (ret)
+	if (ret) {
+		kfree(fence);
 		goto out_unlock;
+	}
 
-	ret = nouveau_fence_new(&fence, chan);
-	if (ret)
-		goto out_unlock;
+	ret = nouveau_fence_emit(fence);
+	if (ret) {
+		nouveau_bo_move_abandon(drm, chan, bo);
+		goto out_fence;
+	}
 
-	/* TODO: figure out a better solution here
-	 *
-	 * wait on the fence here explicitly as going through
-	 * ttm_bo_move_accel_cleanup somehow doesn't seem to do it.
-	 *
-	 * Without this the operation can timeout and we'll fallback to a
-	 * software copy, which might take several minutes to finish.
-	 */
-	nouveau_fence_wait(fence, false, false);
+	if (!nouveau_bo_move_wait(drm, chan, fence) ||
+	    dma_fence_get_status(&fence->base) < 0) {
+		nouveau_bo_move_abandon(drm, chan, bo);
+		ret = -ENODEV;
+		goto out_fence;
+	}
+
 	ret = ttm_bo_move_accel_cleanup(bo, &fence->base, evict, false,
 					new_reg);
+out_fence:
 	nouveau_fence_unref(&fence);
-
 out_unlock:
 	mutex_unlock(&cli->mutex);
 	return ret;
@@ -1208,11 +1263,12 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 			return ret;
 	}
 
-	drm_gpuvm_bo_gem_evict(obj, evict);
-	nouveau_bo_move_ntfy(bo, new_reg);
 	ret = ttm_bo_wait_ctx(bo, ctx);
 	if (ret)
-		goto out_ntfy;
+		return ret;
+
+	drm_gpuvm_bo_gem_evict(obj, evict);
+	nouveau_bo_move_ntfy(bo, new_reg);
 
 	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_TESLA) {
 		ret = nouveau_bo_vm_bind(bo, new_reg, &new_tile);
@@ -1259,8 +1315,13 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 		ret = -ENODEV;
 
 	if (ret) {
-		/* Fallback to software copy. */
-		ret = ttm_bo_move_memcpy(bo, ctx, new_reg);
+		/* Fall back to a CPU copy, except for an interrupted wait the
+		 * caller is going to retry.
+		 */
+		if (ret != -ERESTARTSYS && ret != -EINTR &&
+		    dma_resv_test_signaled(bo->base.resv,
+					   DMA_RESV_USAGE_BOOKKEEP))
+			ret = ttm_bo_move_memcpy(bo, ctx, new_reg);
 	}
 
 out:

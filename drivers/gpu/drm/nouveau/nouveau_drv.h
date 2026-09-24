@@ -237,6 +237,7 @@ struct nouveau_drm {
 		unsigned long suspended_at;
 		bool gc6, gcoff;
 		int gcx_ret;
+		bool vram_hold;
 	} rpm;
 
 	bool rpm_pci_ref;
