@@ -1570,6 +1570,7 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct nouveau_drm *drm = pci_get_drvdata(pdev);
+	unsigned long started;
 	int ret;
 
 	if (!nouveau_pmops_runtime()) {
@@ -1595,11 +1596,16 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 	}
 
 	nouveau_switcheroo_optimus_dsm();
+	started = jiffies;
 	ret = nouveau_do_suspend(drm, true);
 	if (ret)
 		return ret;
 
 	nouveau_pmops_runtime_off(drm, pdev);
+
+	NV_INFO(drm, "runpm: entered D3cold in %ums, cycle %u, gcx gc6:%d gcoff:%d\n",
+		jiffies_to_msecs(jiffies - started), drm->rpm.cycles + 1,
+		drm->rpm.gc6, drm->rpm.gcoff);
 	return 0;
 }
 
@@ -1609,6 +1615,7 @@ nouveau_pmops_runtime_resume(struct device *dev)
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct nouveau_drm *drm = pci_get_drvdata(pdev);
 	struct nvif_device *device = &drm->client.device;
+	unsigned long started, slept;
 	int ret;
 
 	if (!nouveau_pmops_runtime()) {
@@ -1621,6 +1628,9 @@ nouveau_pmops_runtime_resume(struct device *dev)
 		nouveau_pmops_runtime_off(drm, pdev);
 		return -ENODEV;
 	}
+
+	started = jiffies;
+	slept = started - drm->rpm.suspended_at;
 
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
@@ -1653,6 +1663,10 @@ nouveau_pmops_runtime_resume(struct device *dev)
 
 	/* Monitors may have been connected / disconnected during suspend */
 	nouveau_display_hpd_resume(drm);
+
+	NV_INFO(drm, "runpm: left D3cold in %ums after %ums asleep, cycle %u\n",
+		jiffies_to_msecs(jiffies - started), jiffies_to_msecs(slept),
+		drm->rpm.cycles);
 
 	return ret;
 }
