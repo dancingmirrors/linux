@@ -664,11 +664,20 @@ int i915_ttm_move(struct ttm_buffer_object *bo, bool evict,
 							true, dst_mem);
 		if (ret) {
 			dma_fence_wait(migration_fence, false);
-			ttm_bo_move_sync_cleanup(bo, dst_mem);
+			ret = ttm_bo_move_sync_cleanup(bo, dst_mem);
 		}
 		dma_fence_put(migration_fence);
 	} else {
-		ttm_bo_move_sync_cleanup(bo, dst_mem);
+		ret = ttm_bo_move_sync_cleanup(bo, dst_mem);
+	}
+
+	/* The bo did not become idle after all, so it keeps its old placement
+	 * and @dst_mem is untouched. Report that rather than carry on as though
+	 * the move had happened.
+	 */
+	if (ret) {
+		i915_refct_sgt_put(dst_rsgt);
+		return ret;
 	}
 
 	i915_ttm_adjust_domains_after_move(obj);
