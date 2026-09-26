@@ -118,9 +118,9 @@ static int nouveau_recover = 3;
 module_param_named(recover, nouveau_recover, int, 0600);
 
 MODULE_PARM_DESC(runpm_vram_threshold,
-		 "keep the GPU awake while more than this many MiB of VRAM are in use, as runtime suspend has to evict all of it (0 = never, default 256)");
-static unsigned int nouveau_runpm_vram_threshold = 256;
-module_param_named(runpm_vram_threshold, nouveau_runpm_vram_threshold, uint, 0600);
+		 "keep the GPU awake while more than this many MiB of evictable VRAM are in use, as runtime suspend has to evict all of it (-1 = while any is in use, the default, 0 = never hold)");
+static int nouveau_runpm_vram_threshold = -1;
+module_param_named(runpm_vram_threshold, nouveau_runpm_vram_threshold, int, 0600);
 
 static struct drm_driver driver_stub;
 static struct drm_driver driver_pci;
@@ -1506,25 +1506,40 @@ nouveau_pmops_runtime_vram_idle(struct nouveau_drm *drm)
 {
 	struct ttm_resource_manager *man =
 		ttm_manager_type(&drm->ttm.bdev, TTM_PL_VRAM);
-	u64 threshold = (u64)READ_ONCE(nouveau_runpm_vram_threshold) << 20;
-	u64 used;
+	int mib = READ_ONCE(nouveau_runpm_vram_threshold);
+	u64 used, pinned, evictable;
+	bool idle;
 
 	if (!man)
 		return true;
 
 	used = ttm_resource_manager_usage(man);
-	if (!threshold || used <= threshold) {
+	pinned = atomic64_read(&drm->rpm.vram_pinned);
+	evictable = used > pinned ? used - pinned : 0;
+
+	if (mib < 0)
+		idle = !evictable;
+	else if (!mib)
+		idle = true;
+	else
+		idle = evictable <= ((u64)mib << 20);
+
+	if (idle) {
 		if (drm->rpm.vram_hold) {
-			NV_INFO(drm, "runpm: %llu MiB of VRAM in use, runtime suspend permitted\n",
-				used >> 20);
+			NV_INFO(drm, "runpm: %llu MiB of evictable VRAM, runtime suspend permitted\n",
+				evictable >> 20);
 			drm->rpm.vram_hold = false;
 		}
 		return true;
 	}
 
 	if (!drm->rpm.vram_hold) {
-		NV_INFO(drm, "runpm: %llu MiB of VRAM in use, runtime suspend denied (threshold %llu MiB)\n",
-			used >> 20, threshold >> 20);
+		if (mib < 0)
+			NV_INFO(drm, "runpm: %llu KiB of evictable VRAM, runtime suspend denied\n",
+				evictable >> 10);
+		else
+			NV_INFO(drm, "runpm: %llu MiB of evictable VRAM, runtime suspend denied (threshold %d MiB)\n",
+				evictable >> 20, mib);
 		drm->rpm.vram_hold = true;
 	}
 

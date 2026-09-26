@@ -650,6 +650,7 @@ int nouveau_bo_pin_locked(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
 	switch (bo->resource->mem_type) {
 	case TTM_PL_VRAM:
 		drm->gem.vram_available -= bo->base.size;
+		atomic64_add(bo->base.size, &drm->rpm.vram_pinned);
 		break;
 	case TTM_PL_TT:
 		drm->gem.gart_available -= bo->base.size;
@@ -676,6 +677,7 @@ void nouveau_bo_unpin_locked(struct nouveau_bo *nvbo)
 		switch (bo->resource->mem_type) {
 		case TTM_PL_VRAM:
 			drm->gem.vram_available += bo->base.size;
+			atomic64_sub(bo->base.size, &drm->rpm.vram_pinned);
 			break;
 		case TTM_PL_TT:
 			drm->gem.gart_available += bo->base.size;
@@ -930,6 +932,20 @@ nouveau_ttm_tt_unbind(struct ttm_device *bdev, struct ttm_tt *ttm)
 	}
 #endif
 	nouveau_sgdma_unbind(bdev, ttm);
+}
+
+/* Drop @ttm's binding, but only if it is bound to @reg. */
+static void
+nouveau_ttm_tt_unbind_reg(struct ttm_device *bdev, struct ttm_tt *ttm,
+			  struct ttm_resource *reg)
+{
+#if IS_ENABLED(CONFIG_AGP)
+	struct nouveau_drm *drm = nouveau_bdev(bdev);
+
+	if (drm->agp.bridge)
+		return;
+#endif
+	nouveau_sgdma_unbind_reg(bdev, ttm, reg);
 }
 
 static void
@@ -1265,7 +1281,7 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 
 	ret = ttm_bo_wait_ctx(bo, ctx);
 	if (ret)
-		return ret;
+		goto out_unbind;
 
 	drm_gpuvm_bo_gem_evict(obj, evict);
 	nouveau_bo_move_ntfy(bo, new_reg);
@@ -1336,6 +1352,9 @@ out_ntfy:
 		nouveau_bo_move_ntfy(bo, bo->resource);
 		drm_gpuvm_bo_gem_evict(obj, !evict);
 	}
+out_unbind:
+	if (ret && bo->ttm && new_reg->mem_type == TTM_PL_TT)
+		nouveau_ttm_tt_unbind_reg(bo->bdev, bo->ttm, new_reg);
 	return ret;
 }
 

@@ -238,6 +238,7 @@ struct nouveau_drm {
 		bool gc6, gcoff;
 		int gcx_ret;
 		bool vram_hold;
+		atomic64_t vram_pinned;
 	} rpm;
 
 	bool rpm_pci_ref;

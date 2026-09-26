@@ -35,8 +35,17 @@ nouveau_sgdma_bind(struct ttm_device *bdev, struct ttm_tt *ttm, struct ttm_resou
 	struct nouveau_mem *mem = nouveau_mem(reg);
 	int ret;
 
-	if (nvbe->mem)
+	if (nvbe->mem) {
+		/* Keeping the old binding would also skip nouveau_mem_host()
+		 * for @reg, leaving the caller with a GART resource that has
+		 * no nvif memory behind it, so fail the move instead.
+		 */
+		if (nvbe->mem != mem) {
+			NV_DEBUG(drm, "tt already bound to another GART resource\n");
+			return -EINVAL;
+		}
 		return 0;
+	}
 
 	ret = nouveau_mem_host(reg, &nvbe->ttm);
 	if (ret)
@@ -62,6 +71,16 @@ nouveau_sgdma_unbind(struct ttm_device *bdev, struct ttm_tt *ttm)
 		nouveau_mem_fini(nvbe->mem);
 		nvbe->mem = NULL;
 	}
+}
+
+void
+nouveau_sgdma_unbind_reg(struct ttm_device *bdev, struct ttm_tt *ttm,
+			 struct ttm_resource *reg)
+{
+	struct nouveau_sgdma_be *nvbe = (struct nouveau_sgdma_be *)ttm;
+
+	if (nvbe->mem == nouveau_mem(reg))
+		nouveau_sgdma_unbind(bdev, ttm);
 }
 
 struct ttm_tt *

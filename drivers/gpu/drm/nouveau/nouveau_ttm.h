@@ -23,5 +23,7 @@ void nouveau_ttm_global_release(struct nouveau_drm *);
 
 int nouveau_sgdma_bind(struct ttm_device *bdev, struct ttm_tt *ttm, struct ttm_resource *reg);
 void nouveau_sgdma_unbind(struct ttm_device *bdev, struct ttm_tt *ttm);
+void nouveau_sgdma_unbind_reg(struct ttm_device *bdev, struct ttm_tt *ttm,
+			      struct ttm_resource *reg);
 void nouveau_sgdma_destroy(struct ttm_device *bdev, struct ttm_tt *ttm);
 #endif
