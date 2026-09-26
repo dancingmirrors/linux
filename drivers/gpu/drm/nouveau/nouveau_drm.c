@@ -699,7 +699,7 @@ nouveau_drm_device_init(struct nouveau_drm *drm)
 
 	if (nouveau_pmops_runtime()) {
 		pm_runtime_use_autosuspend(dev->dev);
-		pm_runtime_set_autosuspend_delay(dev->dev, 5000);
+		pm_runtime_set_autosuspend_delay(dev->dev, 30000);
 		pm_runtime_set_active(dev->dev);
 		pm_runtime_allow(dev->dev);
 		pm_runtime_mark_last_busy(dev->dev);
