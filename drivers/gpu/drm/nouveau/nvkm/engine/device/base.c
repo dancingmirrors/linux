@@ -27,6 +27,7 @@
 #include <core/option.h>
 
 #include <subdev/bios.h>
+#include <subdev/fsp.h>
 #include <subdev/therm.h>
 
 static DEFINE_MUTEX(nv_devices_mutex);
@@ -2998,6 +2999,8 @@ nvkm_device_preinit(struct nvkm_device *device)
 
 	nvdev_trace(device, "preinit running...\n");
 	time = ktime_to_us(ktime_get());
+
+	nvkm_fsp_wait_bar_firewall(device->fsp);
 
 	nvkm_intr_unarm(device);
 

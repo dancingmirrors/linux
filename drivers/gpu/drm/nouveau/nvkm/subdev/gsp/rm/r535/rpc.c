@@ -162,6 +162,14 @@ r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 gsp_rpc_len, int *ptime)
 		if (used >= size)
 			break;
 
+		if (!(*ptime & 0x3ff) && r535_gsp_crashcat_pending(gsp) &&
+		    r535_gsp_crashcat_check(gsp) > 1) {
+			nvkm_error(&gsp->subdev,
+				   "GSP-RM crashed, no further RPCs will be sent\n");
+			gsp->dead = true;
+			return -EIO;
+		}
+
 		usleep_range(1, 2);
 	} while (--(*ptime));
 
@@ -173,6 +181,7 @@ r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 gsp_rpc_len, int *ptime)
 			   rptr, *gsp->msgq.wptr, gsp->msgq.cnt,
 			   nvkm_falcon_rd32(&gsp->falcon, 0x040),
 			   nvkm_falcon_rd32(&gsp->falcon, 0x044));
+		r535_gsp_crashcat_check(gsp);
 		gsp->dead = true;
 		return -ETIMEDOUT;
 	}

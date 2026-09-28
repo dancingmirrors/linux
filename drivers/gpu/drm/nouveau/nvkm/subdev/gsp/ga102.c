@@ -146,6 +146,8 @@ ga102_gsp_flcn = {
 	.reset_wait_mem_scrubbing = ga102_flcn_reset_wait_mem_scrubbing,
 	.imem_dma = &ga102_flcn_dma,
 	.dmem_dma = &ga102_flcn_dma,
+	.dmem_pio = &gm200_flcn_dmem_pio,
+	.emem_pio = &gp102_flcn_emem_pio,
 	.riscv_active = ga102_flcn_riscv_active,
 	.intr_retrigger = ga100_flcn_intr_retrigger,
 };

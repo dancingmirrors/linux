@@ -75,20 +75,64 @@ r570_fbsr_init(struct nvkm_gsp *gsp, struct sg_table *sgt, u64 size)
 
 	ctrl = nvkm_gsp_rm_ctrl_get(&gsp->internal.device.subdevice,
 				    NV2080_CTRL_CMD_INTERNAL_FBSR_INIT, sizeof(*ctrl));
-	if (IS_ERR(ctrl))
-		return PTR_ERR(ctrl);
+	if (IS_ERR(ctrl)) {
+		ret = PTR_ERR(ctrl);
+		goto done;
+	}
 
 	ctrl->hClient = gsp->internal.client.object.handle;
 	ctrl->hSysMem = memlist.handle;
 	ctrl->sysmemAddrOfSuspendResumeData = gsp->sr.meta.addr;
-	ctrl->bEnteringGcoffState = 0;
+	ctrl->bEnteringGcoffState = gsp->sr.gcoff;
 
 	ret = nvkm_gsp_rm_ctrl_wr(&gsp->internal.device.subdevice, ctrl);
-	if (ret)
-		return ret;
-
+done:
 	nvkm_gsp_rm_free(&memlist);
-	return 0;
+	return ret;
+}
+
+static void
+r570_fbsr_unwind(struct nvkm_gsp *gsp)
+{
+	struct nvkm_device *device = gsp->subdev.device;
+	struct nvkm_instmem *imem = device->imem;
+	struct nvkm_instobj *iobj;
+
+	list_for_each_entry(iobj, &imem->list, head) {
+		kvfree(iobj->suspend);
+		iobj->suspend = NULL;
+	}
+
+	list_for_each_entry(iobj, &imem->boot, head) {
+		kvfree(iobj->suspend);
+		iobj->suspend = NULL;
+	}
+
+	device->bar->bar2 = true;
+
+	r570_fbsr_suspend_channels(gsp, false);
+}
+
+static u64
+r570_fbsr_size(struct nvkm_gsp *gsp, bool cbc)
+{
+	u64 size;
+
+	size  = gsp->fb.heap.size;
+	size += gsp->fb.rsvd_size;
+	size += gsp->fb.bios.vga_workspace.size;
+	if (cbc)
+		size += gsp->fb.comp.cbc_size;
+
+	return size;
+}
+
+static u64
+r570_fbsr_sysmem_size(struct nvkm_gsp *gsp)
+{
+	struct nvkm_device *device = gsp->subdev.device;
+
+	return r570_fbsr_size(gsp, true) + nvkm_instmem_suspend_size(device->imem);
 }
 
 static int
@@ -109,46 +153,44 @@ r570_fbsr_suspend(struct nvkm_gsp *gsp)
 		if (iobj->preserve) {
 			ret = nvkm_instobj_save(iobj);
 			if (ret)
-				return ret;
+				goto fail;
 		}
 	}
 
 	list_for_each_entry(iobj, &imem->boot, head) {
 		ret = nvkm_instobj_save(iobj);
 		if (ret)
-			return ret;
+			goto fail;
 	}
 
 	/* Disable BAR2 access. */
 	device->bar->bar2 = false;
 
-	/* Allocate system memory to hold RM's VRAM allocations across suspend.
-	 * RM adds the compression bit cache's backing store to this when it
-	 * has asked GSP-RM to preserve VRAM, so do the same.
-	 */
-	size  = gsp->fb.heap.size;
-	size += gsp->fb.rsvd_size;
-	size += gsp->fb.bios.vga_workspace.size;
-	if (gsp->fb.preserve_vidmem)
-		size += gsp->fb.comp.cbc_size;
-	nvkm_debug(subdev, "fbsr: size: 0x%llx bytes\n", size);
+	/* Allocate system memory to hold RM's VRAM allocations across suspend. */
+	size = r570_fbsr_size(gsp, gsp->fb.preserve_vidmem || gsp->sr.gcoff);
+	nvkm_debug(subdev, "fbsr: size: 0x%llx bytes (gcoff:%d)\n", size, gsp->sr.gcoff);
 
 	ret = nvkm_gsp_sg(device, size, &gsp->sr.fbsr);
 	if (ret)
-		return ret;
+		goto fail;
 
-	/* Initialise FBSR on RM. */
+	/* Initialize FBSR on RM. */
 	ret = r570_fbsr_init(gsp, &gsp->sr.fbsr, size);
 	if (ret) {
 		nvkm_gsp_sg_free(device, &gsp->sr.fbsr);
-		return ret;
+		goto fail;
 	}
 
 	return 0;
+
+fail:
+	r570_fbsr_unwind(gsp);
+	return ret;
 }
 
 const struct nvkm_rm_api_fbsr
 r570_fbsr = {
 	.suspend = r570_fbsr_suspend,
 	.resume = r570_fbsr_resume,
+	.sysmem_size = r570_fbsr_sysmem_size,
 };

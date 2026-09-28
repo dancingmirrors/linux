@@ -237,21 +237,37 @@ gh100_fsp_boot_gsp_fmc(struct nvkm_fsp *fsp, u64 args_addr, u32 rsvd_size, bool 
 	return gh100_fsp_send_sync(fsp, NVDM_TYPE_COT, (const u8 *)&msg, sizeof(msg));
 }
 
+void
+gh100_fsp_boot_timeout(struct nvkm_fsp *fsp, u32 status, unsigned int timeout_ms)
+{
+	struct nvkm_device *device = fsp->subdev.device;
+
+	nvkm_error(&fsp->subdev,
+		   "boot not complete after %ums: status %08x, scratch %08x %08x %08x %08x\n",
+		   timeout_ms, status,
+		   nvkm_rd32(device, NV_PFSP_FALCON_COMMON_SCRATCH_GROUP_2(0)),
+		   nvkm_rd32(device, NV_PFSP_FALCON_COMMON_SCRATCH_GROUP_2(1)),
+		   nvkm_rd32(device, NV_PFSP_FALCON_COMMON_SCRATCH_GROUP_2(2)),
+		   nvkm_rd32(device, NV_PFSP_FALCON_COMMON_SCRATCH_GROUP_2(3)));
+}
+
 int
 gh100_fsp_wait_secure_boot(struct nvkm_fsp *fsp)
 {
 	struct nvkm_device *device = fsp->subdev.device;
-	unsigned timeout_ms = 4000;
+	const unsigned int timeout_ms = 4000;
+	unsigned int time = timeout_ms;
+	u32 status;
 
 	do {
-		u32 status = NVKM_RD32(device, NV_THERM, I2CS_SCRATCH, FSP_BOOT_COMPLETE_STATUS);
-
+		status = NVKM_RD32(device, NV_THERM, I2CS_SCRATCH, FSP_BOOT_COMPLETE_STATUS);
 		if (status == NV_THERM_I2CS_SCRATCH_FSP_BOOT_COMPLETE_STATUS_SUCCESS)
 			return 0;
 
 		usleep_range(1000, 2000);
-	} while (timeout_ms--);
+	} while (time--);
 
+	gh100_fsp_boot_timeout(fsp, status, timeout_ms);
 	return -ETIMEDOUT;
 }
 

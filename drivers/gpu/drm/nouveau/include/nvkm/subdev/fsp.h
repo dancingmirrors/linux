@@ -14,6 +14,7 @@ struct nvkm_fsp {
 	struct nvkm_falcon falcon;
 };
 
+void nvkm_fsp_wait_bar_firewall(struct nvkm_fsp *);
 bool nvkm_fsp_verify_gsp_fmc(struct nvkm_fsp *, u32 hash_size, u32 pkey_size, u32 sig_size);
 int nvkm_fsp_boot_gsp_fmc(struct nvkm_fsp *, u64 args_addr, u32 rsvd_size, bool resume,
 			  u64 img_addr, const u8 *hash, const u8 *pkey, const u8 *sig);

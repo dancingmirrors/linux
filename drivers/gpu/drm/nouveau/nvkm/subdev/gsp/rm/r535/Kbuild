@@ -5,6 +5,7 @@
 nvkm-y += nvkm/subdev/gsp/rm/r535/rm.o
 nvkm-y += nvkm/subdev/gsp/rm/r535/gsp.o
 nvkm-y += nvkm/subdev/gsp/rm/r535/rpc.o
+nvkm-y += nvkm/subdev/gsp/rm/r535/crashcat.o
 nvkm-y += nvkm/subdev/gsp/rm/r535/ctrl.o
 nvkm-y += nvkm/subdev/gsp/rm/r535/alloc.o
 nvkm-y += nvkm/subdev/gsp/rm/r535/client.o

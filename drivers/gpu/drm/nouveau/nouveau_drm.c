@@ -31,6 +31,7 @@
 #include <linux/mmu_notifier.h>
 #include <linux/dynamic_debug.h>
 #include <linux/debugfs.h>
+#include <linux/mm.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_drv.h>
@@ -1501,21 +1502,61 @@ ready:
 	return true;
 }
 
-static bool
-nouveau_pmops_runtime_vram_idle(struct nouveau_drm *drm)
+static u64
+nouveau_pmops_runtime_vram_evictable(struct nouveau_drm *drm)
 {
 	struct ttm_resource_manager *man =
 		ttm_manager_type(&drm->ttm.bdev, TTM_PL_VRAM);
-	int mib = READ_ONCE(nouveau_runpm_vram_threshold);
-	u64 used, pinned, evictable;
-	bool idle;
+	u64 used, pinned;
 
 	if (!man)
-		return true;
+		return 0;
 
 	used = ttm_resource_manager_usage(man);
 	pinned = atomic64_read(&drm->rpm.vram_pinned);
-	evictable = used > pinned ? used - pinned : 0;
+	return used > pinned ? used - pinned : 0;
+}
+
+#define NOUVEAU_RUNPM_MEM_HEADROOM	(128ULL << 20)
+
+static bool
+nouveau_pmops_runtime_mem_ok(struct nouveau_drm *drm)
+{
+	struct nvkm_device *device = nvxx_device(drm);
+	u64 evictable, gsp_size, need, avail;
+
+	if (!nvkm_boolopt(device->cfgopt, "NvRunpmMemCheck", true))
+		return true;
+
+	evictable = nouveau_pmops_runtime_vram_evictable(drm);
+	gsp_size = r535_gsp_sr_sysmem_size(device->gsp);
+	need = evictable + gsp_size + NOUVEAU_RUNPM_MEM_HEADROOM;
+	avail = (u64)si_mem_available() << PAGE_SHIFT;
+
+	if (avail >= need) {
+		if (drm->rpm.mem_hold) {
+			NV_INFO(drm, "runpm: %llu MiB of system memory available, runtime suspend permitted\n",
+				avail >> 20);
+			drm->rpm.mem_hold = false;
+		}
+		return true;
+	}
+
+	if (!drm->rpm.mem_hold) {
+		NV_INFO(drm, "runpm: %llu MiB of system memory available, need ~%llu MiB (%llu MiB of VRAM, %llu MiB of GSP-RM state), runtime suspend denied\n",
+			avail >> 20, need >> 20, evictable >> 20, gsp_size >> 20);
+		drm->rpm.mem_hold = true;
+	}
+
+	return false;
+}
+
+static bool
+nouveau_pmops_runtime_vram_idle(struct nouveau_drm *drm)
+{
+	int mib = READ_ONCE(nouveau_runpm_vram_threshold);
+	u64 evictable = nouveau_pmops_runtime_vram_evictable(drm);
+	bool idle;
 
 	if (mib < 0)
 		idle = !evictable;
@@ -1584,7 +1625,8 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 		return 0;
 	}
 
-	if (!nouveau_pmops_runtime_vram_idle(drm)) {
+	if (!nouveau_pmops_runtime_vram_idle(drm) ||
+	    !nouveau_pmops_runtime_mem_ok(drm)) {
 		pm_runtime_mark_last_busy(dev);
 		return -EBUSY;
 	}

@@ -8,6 +8,7 @@
 #include <subdev/fsp.h>
 
 struct nvkm_fsp_func {
+	void (*wait_bar_firewall)(struct nvkm_fsp *);
 	int (*wait_secure_boot)(struct nvkm_fsp *);
 
 	struct {
@@ -24,6 +25,7 @@ int nvkm_fsp_new_(const struct nvkm_fsp_func *,
 		  struct nvkm_device *, enum nvkm_subdev_type, int inst, struct nvkm_fsp **);
 
 int gh100_fsp_wait_secure_boot(struct nvkm_fsp *);
+void gh100_fsp_boot_timeout(struct nvkm_fsp *, u32 status, unsigned int timeout_ms);
 int gh100_fsp_boot_gsp_fmc(struct nvkm_fsp *, u64 args_addr, u32 rsvd_size, bool resume,
 			   u64 img_addr, const u8 *hash, const u8 *pkey, const u8 *sig);
 #endif

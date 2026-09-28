@@ -35,6 +35,7 @@ ga100_gsp_flcn = {
 	.bind_intr = true,
 	.imem_pio = &gm200_flcn_imem_pio,
 	.dmem_pio = &gm200_flcn_dmem_pio,
+	.emem_pio = &gp102_flcn_emem_pio,
 	.riscv_active = tu102_flcn_riscv_active,
 	.intr_retrigger = ga100_flcn_intr_retrigger,
 };

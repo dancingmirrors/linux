@@ -23,6 +23,7 @@
 
 #include "priv.h"
 
+#include <core/option.h>
 #include <core/pci.h>
 #include <subdev/pci/priv.h>
 #include <subdev/timer.h>
@@ -1765,6 +1766,22 @@ r535_gsp_sr_free(struct nvkm_gsp *gsp)
 	nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.sgt);
 	nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.fbsr);
 	gsp->sr.retired = false;
+	gsp->sr.gcoff = false;
+}
+
+u64
+r535_gsp_sr_sysmem_size(struct nvkm_gsp *gsp)
+{
+	u64 size;
+
+	if (!nvkm_gsp_rm(gsp) || !gsp->wpr_meta.data)
+		return 0;
+
+	size = gsp->rm->api->gsp->sr_data_size(gsp);
+
+	size += (size >> (GSP_PAGE_SHIFT - 3)) + 2 * GSP_PAGE_SIZE;
+
+	return size + gsp->rm->api->fbsr->sysmem_size(gsp);
 }
 
 void
@@ -1798,11 +1815,11 @@ r535_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 
 		ret = nvkm_gsp_radix3_sg(gsp, &gsp->sr.sgt, len, &gsp->sr.radix3);
 		if (ret)
-			return ret;
+			goto sr_fail;
 
 		ret = nvkm_gsp_mem_ctor(gsp, sizeof(*sr), &gsp->sr.meta);
 		if (ret)
-			return ret;
+			goto sr_fail;
 
 		sr = gsp->sr.meta.data;
 		sr->magic = GSP_FW_SR_META_MAGIC;
@@ -1810,13 +1827,12 @@ r535_gsp_fini(struct nvkm_gsp *gsp, enum nvkm_suspend_state suspend)
 		sr->sysmemAddrOfSuspendResumeData = gsp->sr.radix3.lvl0.addr;
 		sr->sizeOfSuspendResumeData = len;
 
+		gsp->sr.gcoff = suspend == NVKM_RUNTIME_SUSPEND &&
+				nvkm_boolopt(gsp->subdev.device->cfgopt, "NvFbsrGcoff", true);
+
 		ret = rm->api->fbsr->suspend(gsp);
-		if (ret) {
-			nvkm_gsp_mem_dtor(&gsp->sr.meta);
-			nvkm_gsp_radix3_dtor(gsp, &gsp->sr.radix3);
-			nvkm_gsp_sg_free(gsp->subdev.device, &gsp->sr.sgt);
-			return ret;
-		}
+		if (ret)
+			goto sr_fail;
 
 		/*
 		 * TODO: Debug the GSP firmware / RPC handling to find out why
@@ -1851,6 +1867,10 @@ done:
 
 	cancel_work_sync(&gsp->msgq.work);
 	return ret;
+
+sr_fail:
+	r535_gsp_sr_free(gsp);
+	return ret;
 }
 
 int
@@ -1862,6 +1882,8 @@ r535_gsp_init(struct nvkm_gsp *gsp)
 
 	if (WARN_ON(!nvkm_falcon_riscv_active(&gsp->falcon)))
 		return -EIO;
+
+	r535_gsp_crashcat_reset(gsp);
 
 	cancel_work_sync(&gsp->msgq.work);
 

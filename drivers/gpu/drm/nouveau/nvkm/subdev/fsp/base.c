@@ -4,6 +4,13 @@
  */
 #include "priv.h"
 
+void
+nvkm_fsp_wait_bar_firewall(struct nvkm_fsp *fsp)
+{
+	if (fsp && fsp->func->wait_bar_firewall)
+		fsp->func->wait_bar_firewall(fsp);
+}
+
 int
 nvkm_fsp_boot_gsp_fmc(struct nvkm_fsp *fsp, u64 args_addr, u32 rsvd_size, bool resume,
 		      u64 img_addr, const u8 *hash, const u8 *pkey, const u8 *sig)

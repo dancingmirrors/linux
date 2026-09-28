@@ -170,6 +170,7 @@ fbsr_init(struct fbsr *fbsr, struct sg_table *sgt, u64 items_size)
 	ctrl->hClient = fbsr->client.object.handle;
 	ctrl->hSysMem = fbsr->hmemory++;
 	ctrl->gspFbAllocsSysOffset = items_size;
+	ctrl->bEnteringGcoffState = gsp->sr.gcoff;
 
 	ret = nvkm_gsp_rm_ctrl_wr(&gsp->internal.device.subdevice, ctrl);
 	if (ret)
@@ -288,10 +289,22 @@ done:
 	return ret;
 }
 
+static u64
+r535_fbsr_sysmem_size(struct nvkm_gsp *gsp)
+{
+	struct nvkm_device *device = gsp->subdev.device;
+
+	return nvkm_instmem_suspend_size(device->imem) +
+	       gsp->fb.heap.size +
+	       gsp->fb.rsvd_size +
+	       gsp->fb.bios.vga_workspace.size;
+}
+
 const struct nvkm_rm_api_fbsr
 r535_fbsr = {
 	.suspend = r535_fbsr_suspend,
 	.resume = r535_fbsr_resume,
+	.sysmem_size = r535_fbsr_sysmem_size,
 };
 
 static void *

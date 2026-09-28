@@ -163,6 +163,24 @@ nvkm_instmem_wr32(struct nvkm_instmem *imem, u32 addr, u32 data)
 	return imem->func->wr32(imem, addr, data);
 }
 
+u64
+nvkm_instmem_suspend_size(struct nvkm_instmem *imem)
+{
+	struct nvkm_instobj *iobj;
+	u64 size = 0;
+
+	spin_lock(&imem->lock);
+	list_for_each_entry(iobj, &imem->list, head) {
+		if (iobj->preserve)
+			size += nvkm_memory_size(&iobj->memory);
+	}
+	list_for_each_entry(iobj, &imem->boot, head)
+		size += nvkm_memory_size(&iobj->memory);
+	spin_unlock(&imem->lock);
+
+	return size;
+}
+
 void
 nvkm_instmem_boot(struct nvkm_instmem *imem)
 {

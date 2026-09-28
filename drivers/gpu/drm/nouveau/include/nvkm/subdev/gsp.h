@@ -167,6 +167,7 @@ struct nvkm_gsp {
 		struct sg_table fbsr;
 
 		bool retired;
+		bool gcoff;
 	} sr;
 
 	struct {
@@ -208,6 +209,17 @@ struct nvkm_gsp {
 
 	bool running;
 	bool dead;
+
+	struct {
+		bool disabled;
+		bool valid;
+		bool unusable;
+		u8 aperture;
+		u32 offset;
+		u32 size;
+		u16 put_reg;
+		u16 get_reg;
+	} crashcat;
 
 	/* Internal GSP-RM control handles. */
 	struct {

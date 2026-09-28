@@ -110,11 +110,19 @@ static void
 gh100_gsp_boot_failed(struct nvkm_gsp *gsp)
 {
 	struct nvkm_falcon *falcon = &gsp->falcon;
+	u32 mbox0 = nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX0);
 
-	nvkm_error(&gsp->subdev, "GSP-RM didn't boot: cpuctl %08x, mbox %08x %08x\n",
+	nvkm_error(&gsp->subdev, "GSP-RM didn't boot: cpuctl %08x, hwcfg2 %08x, mbox %08x %08x\n",
 		   nvkm_falcon_rd32(falcon, falcon->addr2 + NV_PRISCV_RISCV_CPUCTL),
-		   nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX0),
-		   nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX1));
+		   nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_HWCFG2),
+		   mbox0, nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX1));
+
+	r535_gsp_crashcat_check(gsp);
+
+	if (!gsp->crashcat.valid && mbox0 && !(mbox0 & ~0xffU))
+		nvkm_error(&gsp->subdev,
+			   "mbox0 0x%02x looks like a GSP-FMC error code, reported after lockdown release\n",
+			   mbox0);
 
 	gh100_gsp_fmc_error(gsp);
 }
@@ -160,6 +168,7 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 	int ret, time = 4000;
 	u32 rsvd_size;
 	u32 mbox0;
+	ktime_t start;
 
 	if (!resume) {
 		if (gsp->fmc.args.data) {
@@ -192,6 +201,7 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 
 	gh100_gsp_fmc_error_reset(gsp);
 
+	start = ktime_get();
 	ret = nvkm_fsp_boot_gsp_fmc(device->fsp, gsp->fmc.args.addr, rsvd_size, resume,
 				    gsp->fmc.fw.addr, gsp->fmc.hash, gsp->fmc.pkey, gsp->fmc.sig);
 	if (ret) {
@@ -227,6 +237,9 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 
 	if (gh100_gsp_fmc_error(gsp))
 		return -EIO;
+
+	nvkm_debug(subdev, "GSP-FMC %s lockdown released after %lldms\n",
+		   resume ? "resume" : "boot", ktime_ms_delta(ktime_get(), start));
 
 	ret = r535_gsp_init(gsp);
 	if (ret)

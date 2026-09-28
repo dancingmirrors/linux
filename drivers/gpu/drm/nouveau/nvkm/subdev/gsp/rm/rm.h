@@ -81,6 +81,7 @@ struct nvkm_rm_api {
 	const struct nvkm_rm_api_fbsr {
 		int (*suspend)(struct nvkm_gsp *);
 		void (*resume)(struct nvkm_gsp *);
+		u64 (*sysmem_size)(struct nvkm_gsp *);
 	} *fbsr;
 
 	const struct nvkm_rm_api_disp {
@@ -175,6 +176,10 @@ int r535_gr_promote_ctx(struct r535_gr *, bool golden, struct nvkm_vmm *,
 			struct nvkm_memory **pctxbuf_mem, struct nvkm_vma **pctxbuf_vma,
 			struct nvkm_gsp_object *chan);
 int r535_gsp_gcx_ready(struct nvkm_gsp *, bool *gc6, bool *gcoff);
+u64 r535_gsp_sr_sysmem_size(struct nvkm_gsp *);
+bool r535_gsp_crashcat_pending(struct nvkm_gsp *);
+int r535_gsp_crashcat_check(struct nvkm_gsp *);
+void r535_gsp_crashcat_reset(struct nvkm_gsp *);
 void r535_gsp_dead(struct nvkm_gsp *);
 void r535_gsp_lost(struct nvkm_gsp *);
 extern const struct nvkm_rm_api_engine r535_nvdec;
