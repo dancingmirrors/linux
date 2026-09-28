@@ -113,16 +113,6 @@ MODULE_PARM_DESC(runpm, "disable (0), force enable (1), optimus only default (-1
 static int nouveau_runtime_pm = -1;
 module_param_named(runpm, nouveau_runtime_pm, int, 0400);
 
-MODULE_PARM_DESC(recover,
-		 "re-bind the driver to recover a runtime-suspended GPU that didn't come back, at most this many times per 10 minutes (0 = never, default 3)");
-static int nouveau_recover = 3;
-module_param_named(recover, nouveau_recover, int, 0600);
-
-MODULE_PARM_DESC(runpm_vram_threshold,
-		 "keep the GPU awake while more than this many MiB of evictable VRAM are in use, as runtime suspend has to evict all of it (-1 = while any is in use, the default, 0 = never hold)");
-static int nouveau_runpm_vram_threshold = -1;
-module_param_named(runpm_vram_threshold, nouveau_runpm_vram_threshold, int, 0600);
-
 static struct drm_driver driver_stub;
 static struct drm_driver driver_pci;
 static struct drm_driver driver_platform;
@@ -1120,13 +1110,10 @@ nouveau_drm_kill_channels(struct nouveau_drm *drm, bool block)
 	return done;
 }
 
-#define NOUVEAU_RECOVER_WINDOW	(10 * 60)	/* seconds */
 #define NOUVEAU_RECOVER_DELAY	1000		/* ms */
 
 struct nouveau_recover_data {
 	struct list_head head;
-	unsigned int count;
-	time64_t first;
 	bool pending;
 	struct task_struct *task;
 	char name[];
@@ -1241,11 +1228,6 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 	struct device *dev = drm->dev->dev;
 	struct nouveau_recover_data *data;
 	struct nouveau_recover_work *rw;
-	time64_t now = ktime_get_boottime_seconds();
-	int max = READ_ONCE(nouveau_recover);
-
-	if (max <= 0)
-		return;
 
 	if (!nouveau_pmops_runtime())
 		return;
@@ -1256,17 +1238,6 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 	if (!data)
 		goto unlock;
 
-	if (!data->count || now - data->first > NOUVEAU_RECOVER_WINDOW) {
-		data->first = now;
-		data->count = 0;
-	}
-
-	if (data->count >= (unsigned int)max) {
-		NV_ERROR(drm, "not re-binding again: %u attempts in %llu seconds\n",
-			 data->count, (unsigned long long)(now - data->first));
-		goto unlock;
-	}
-
 	if (!try_module_get(THIS_MODULE))
 		goto unlock;
 
@@ -1276,10 +1247,9 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 		goto unlock;
 	}
 
-	data->count++;
 	data->pending = true;
 
-	NV_ERROR(drm, "re-binding the driver to recover (attempt %u)\n", data->count);
+	NV_ERROR(drm, "re-binding the driver to recover\n");
 
 	rw->dev = get_device(dev);
 	INIT_DELAYED_WORK(&rw->work, nouveau_drm_recover_work);
@@ -1554,33 +1524,19 @@ nouveau_pmops_runtime_mem_ok(struct nouveau_drm *drm)
 static bool
 nouveau_pmops_runtime_vram_idle(struct nouveau_drm *drm)
 {
-	int mib = READ_ONCE(nouveau_runpm_vram_threshold);
 	u64 evictable = nouveau_pmops_runtime_vram_evictable(drm);
-	bool idle;
 
-	if (mib < 0)
-		idle = !evictable;
-	else if (!mib)
-		idle = true;
-	else
-		idle = evictable <= ((u64)mib << 20);
-
-	if (idle) {
+	if (!evictable) {
 		if (drm->rpm.vram_hold) {
-			NV_INFO(drm, "runpm: %llu MiB of evictable VRAM, runtime suspend permitted\n",
-				evictable >> 20);
+			NV_INFO(drm, "runpm: no evictable VRAM left, runtime suspend permitted\n");
 			drm->rpm.vram_hold = false;
 		}
 		return true;
 	}
 
 	if (!drm->rpm.vram_hold) {
-		if (mib < 0)
-			NV_INFO(drm, "runpm: %llu KiB of evictable VRAM, runtime suspend denied\n",
-				evictable >> 10);
-		else
-			NV_INFO(drm, "runpm: %llu MiB of evictable VRAM, runtime suspend denied (threshold %d MiB)\n",
-				evictable >> 20, mib);
+		NV_INFO(drm, "runpm: %llu KiB of evictable VRAM, runtime suspend denied\n",
+			evictable >> 10);
 		drm->rpm.vram_hold = true;
 	}
 
