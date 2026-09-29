@@ -690,6 +690,7 @@ nouveau_drm_device_init(struct nouveau_drm *drm)
 	nouveau_led_init(dev);
 
 	if (nouveau_pmops_runtime()) {
+		drm->rpm.resumed_at = jiffies;
 		pm_runtime_use_autosuspend(dev->dev);
 		pm_runtime_set_autosuspend_delay(dev->dev, 30000);
 		pm_runtime_set_active(dev->dev);
@@ -1449,7 +1450,6 @@ nouveau_pmops_runtime(void)
 }
 
 #define NOUVEAU_GCX_MAX_DEFER 0
-#define NOUVEAU_GCX_DEFER_WARN 12
 
 static bool
 nouveau_gcoff_ready(struct nouveau_drm *drm)
@@ -1472,31 +1472,32 @@ nouveau_gcoff_ready(struct nouveau_drm *drm)
 		goto ready;
 	}
 
-	if (gc6 || gcoff)
+	if (gc6 || gcoff) {
+		if (drm->gcx_deferrals)
+			NV_INFO(drm, "runpm: GCx prerequisites met after %u deferrals, runtime suspend permitted\n",
+				drm->gcx_deferrals);
 		goto ready;
+	}
 
 	NV_DEBUG(drm, "gcx: prerequisites not satisfied\n");
 
 	if (!nvkm_longopt(device->cfgopt, "NvGcxCheck", 1))
 		goto ready;
 
-	drm->gcx_deferrals++;
-
 	max = nvkm_longopt(device->cfgopt, "NvGcxMaxDefer", NOUVEAU_GCX_MAX_DEFER);
-	if (max > 0 && drm->gcx_deferrals > max) {
+	if (max > 0 && drm->gcx_deferrals >= max) {
 		NV_INFO(drm, "gcx: prerequisites still unmet after %ld deferrals, suspending anyway\n",
 			max);
 		goto ready;
 	}
 
-	if (drm->gcx_deferrals == NOUVEAU_GCX_DEFER_WARN) {
-		NV_INFO(drm, "gcx: GSP-RM has refused GCx entry %d times in a row, keeping the GPU on until it agrees\n",
-			NOUVEAU_GCX_DEFER_WARN);
-	}
+	if (!drm->gcx_deferrals++)
+		NV_INFO(drm, "runpm: GSP-RM says the GCx prerequisites aren't met, runtime suspend denied\n");
 
 	return false;
 
 ready:
+	drm->rpm.gcx_deferred = drm->gcx_deferrals;
 	drm->gcx_deferrals = 0;
 	return true;
 }
@@ -1630,8 +1631,9 @@ nouveau_pmops_runtime_suspend(struct device *dev)
 
 	nouveau_pmops_runtime_off(drm, pdev);
 
-	NV_INFO(drm, "runpm: entered D3cold in %ums, cycle %u, gcx gc6:%d gcoff:%d\n",
-		jiffies_to_msecs(jiffies - started), drm->rpm.cycles + 1,
+	NV_INFO(drm, "runpm: entered D3cold in %ums after %ums awake, cycle %u, gcx gc6:%d gcoff:%d\n",
+		jiffies_to_msecs(jiffies - started),
+		jiffies_to_msecs(started - drm->rpm.resumed_at), drm->rpm.cycles + 1,
 		drm->rpm.gc6, drm->rpm.gcoff);
 	return 0;
 }
@@ -1674,7 +1676,7 @@ nouveau_pmops_runtime_resume(struct device *dev)
 			 drm->rpm.cycles + 1,
 			 jiffies_to_msecs(jiffies - drm->rpm.suspended_at),
 			 drm->rpm.gc6, drm->rpm.gcoff, drm->rpm.gcx_ret,
-			 drm->gcx_deferrals);
+			 drm->rpm.gcx_deferred);
 		nouveau_drm_lost(drm);
 		nouveau_drm_recover_schedule(drm);
 
@@ -1691,8 +1693,10 @@ nouveau_pmops_runtime_resume(struct device *dev)
 	/* Monitors may have been connected / disconnected during suspend */
 	nouveau_display_hpd_resume(drm);
 
+	drm->rpm.resumed_at = jiffies;
+
 	NV_INFO(drm, "runpm: left D3cold in %ums after %ums asleep, cycle %u\n",
-		jiffies_to_msecs(jiffies - started), jiffies_to_msecs(slept),
+		jiffies_to_msecs(drm->rpm.resumed_at - started), jiffies_to_msecs(slept),
 		drm->rpm.cycles);
 
 	return ret;

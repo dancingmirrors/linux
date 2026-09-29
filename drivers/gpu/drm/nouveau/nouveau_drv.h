@@ -235,8 +235,10 @@ struct nouveau_drm {
 	struct {
 		unsigned int cycles;
 		unsigned long suspended_at;
+		unsigned long resumed_at;
 		bool gc6, gcoff;
 		int gcx_ret;
+		unsigned int gcx_deferred;
 		bool vram_hold;
 		bool mem_hold;
 		atomic64_t vram_pinned;
