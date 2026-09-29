@@ -34,8 +34,8 @@
 #include <nvif/if900d.h>
 
 int
-nouveau_mem_map(struct nouveau_mem *mem,
-		struct nvif_vmm *vmm, struct nvif_vma *vma)
+nouveau_mem_map_kind(struct nouveau_mem *mem, struct nvif_vmm *vmm,
+		     struct nvif_vma *vma, u8 kind)
 {
 	union {
 		struct nv50_vmm_map_v0 nv50;
@@ -50,7 +50,7 @@ nouveau_mem_map(struct nouveau_mem *mem,
 		args.nv50.version = 0;
 		args.nv50.ro = 0;
 		args.nv50.priv = 0;
-		args.nv50.kind = mem->kind;
+		args.nv50.kind = kind;
 		args.nv50.comp = mem->comp;
 		argc = sizeof(args.nv50);
 		break;
@@ -64,7 +64,7 @@ nouveau_mem_map(struct nouveau_mem *mem,
 			args.gf100.vol = 1;
 		args.gf100.ro = 0;
 		args.gf100.priv = 0;
-		args.gf100.kind = mem->kind;
+		args.gf100.kind = kind;
 		argc = sizeof(args.gf100);
 		break;
 	default:
@@ -75,9 +75,17 @@ nouveau_mem_map(struct nouveau_mem *mem,
 	return nvif_vmm_map(vmm, vma->addr, mem->mem.size, &args, argc, &mem->mem, 0);
 }
 
+int
+nouveau_mem_map(struct nouveau_mem *mem,
+		struct nvif_vmm *vmm, struct nvif_vma *vma)
+{
+	return nouveau_mem_map_kind(mem, vmm, vma, mem->kind);
+}
+
 void
 nouveau_mem_fini(struct nouveau_mem *mem)
 {
+	nvif_vmm_put(&mem->drm->client.vmm.vmm, &mem->vma[2]);
 	nvif_vmm_put(&mem->drm->client.vmm.vmm, &mem->vma[1]);
 	nvif_vmm_put(&mem->drm->client.vmm.vmm, &mem->vma[0]);
 	mutex_lock(&mem->drm->client_mutex);

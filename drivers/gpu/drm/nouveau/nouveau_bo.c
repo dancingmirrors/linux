@@ -27,6 +27,7 @@
  *	    Jeremy Kolb  <jkolb@brandeis.edu>
  */
 
+#include <linux/dma-fence-unwrap.h>
 #include <linux/dma-mapping.h>
 #include <drm/ttm/ttm_tt.h>
 
@@ -35,6 +36,7 @@
 #include "nouveau_dma.h"
 #include "nouveau_fence.h"
 
+#include <core/option.h>
 #include <subdev/gsp.h>
 
 #include "nouveau_bo.h"
@@ -46,6 +48,8 @@
 #include <nvif/class.h>
 #include <nvif/if500b.h>
 #include <nvif/if900b.h>
+
+#include <nvhw/ref/gh100/dev_mmu.h>
 
 static int nouveau_ttm_tt_bind(struct ttm_device *bdev, struct ttm_tt *ttm,
 			       struct ttm_resource *reg);
@@ -136,12 +140,32 @@ nv10_bo_set_tiling(struct drm_device *dev, u32 addr,
 	return found;
 }
 
+bool
+nouveau_bo_comp_hw(struct nouveau_drm *drm)
+{
+	struct nvkm_gsp *gsp = nvxx_device(drm)->gsp;
+
+	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_HOPPER)
+		return false;
+
+	return gsp && gsp->fb.comp.page_shift && !gsp->fb.comp.disabled;
+}
+
 static bool
 nouveau_bo_comp_charge(struct nouveau_drm *drm, struct nouveau_bo *nvbo,
 		       u64 size)
 {
 	struct nvkm_gsp *gsp = nvxx_device(drm)->gsp;
 	s64 old;
+
+	if (READ_ONCE(drm->ttm.scrub.dead))
+		return false;
+
+	if (nouveau_bo_comp_hw(drm) && nvbo->page < gsp->fb.comp.page_shift) {
+		NV_DEBUG(drm, "comp: denied %llu KiB on %d-bit pages\n",
+			 size >> 10, nvbo->page);
+		return false;
+	}
 
 	if (!gsp || !gsp->fb.comp.limit)
 		return true;
@@ -966,6 +990,25 @@ nouveau_bo_evict_flags(struct ttm_buffer_object *bo, struct ttm_placement *pl)
 	*pl = nvbo->placement;
 }
 
+int
+nouveau_bo_scrub_map(struct nouveau_drm *drm, struct nouveau_mem *mem)
+{
+	struct nvif_vmm *vmm = &drm->client.vmm.vmm;
+	int ret;
+
+	ret = nvif_vmm_get(vmm, LAZY, false, mem->mem.page, 0,
+			   mem->mem.size, &mem->vma[2]);
+	if (ret)
+		return ret;
+
+	ret = nouveau_mem_map_kind(mem, vmm, &mem->vma[2],
+				   NV_MMU_PTE_KIND_GENERIC_MEMORY_COMPRESSIBLE_DISABLE_PLC);
+	if (ret)
+		nvif_vmm_put(vmm, &mem->vma[2]);
+
+	return ret;
+}
+
 static int
 nouveau_bo_move_prep(struct nouveau_drm *drm, struct ttm_buffer_object *bo,
 		     struct ttm_resource *reg)
@@ -1032,18 +1075,103 @@ nouveau_bo_move_wait(struct nouveau_drm *drm, struct nouveau_channel *chan,
 }
 
 static void
+nouveau_bo_move_unwind(struct nouveau_channel *chan)
+{
+	chan->chan.push.cur = chan->chan.push.bgn;
+	WIND_RING(chan);
+}
+
+static void
 nouveau_bo_move_abandon(struct nouveau_drm *drm, struct nouveau_channel *chan,
 			struct ttm_buffer_object *bo)
 {
 	struct nouveau_mem *mem = nouveau_mem(bo->resource);
 
-	chan->chan.push.cur = chan->chan.push.bgn;
-	WIND_RING(chan);
+	nouveau_bo_move_unwind(chan);
 
 	if (drm->client.device.info.family >= NV_DEVICE_INFO_V0_TESLA) {
 		nvif_vmm_put(&drm->client.vmm.vmm, &mem->vma[1]);
 		nvif_vmm_put(&drm->client.vmm.vmm, &mem->vma[0]);
 	}
+}
+
+static void
+nouveau_bo_scrub_dead(struct nouveau_drm *drm, int ret)
+{
+	bool enabled;
+
+	spin_lock(&drm->ttm.scrub.lock);
+	enabled = drm->ttm.scrub.enabled;
+	if (enabled) {
+		drm->ttm.scrub.enabled = false;
+		WRITE_ONCE(drm->ttm.scrub.dead, true);
+	}
+	spin_unlock(&drm->ttm.scrub.lock);
+
+	if (enabled)
+		NV_ERROR(drm, "comp: copy engine can't clear VRAM (%d), no more compression\n",
+			 ret);
+}
+
+static int
+nouveau_bo_scrub_clear(struct nouveau_drm *drm, struct nouveau_mem *mem,
+		       struct nouveau_fence *fence)
+{
+	struct nouveau_channel *chan = drm->ttm.chan;
+	int ret;
+
+	if (atomic_read(&chan->killed)) {
+		kfree(fence);
+		ret = -ENODEV;
+		goto dead;
+	}
+
+	ret = drm->ttm.clear(chan, mem->vma[2].addr, mem->mem.size);
+	if (ret) {
+		nouveau_bo_move_unwind(chan);
+		kfree(fence);
+		goto dead;
+	}
+
+	ret = nouveau_fence_emit(fence);
+	if (ret) {
+		nouveau_bo_move_unwind(chan);
+		mem->leak = true;
+	} else if (!nouveau_bo_move_wait(drm, chan, fence)) {
+		ret = -ETIMEDOUT;
+		mem->leak = true;
+	} else {
+		ret = dma_fence_get_status(&fence->base);
+		if (ret < 0)
+			mem->leak = true;
+		else
+			ret = 0;
+	}
+
+	nouveau_fence_unref(&fence);
+	if (!ret) {
+		mem->scrub = false;
+		return 0;
+	}
+
+dead:
+	nouveau_bo_scrub_dead(drm, ret);
+	return ret;
+}
+
+static void
+nouveau_bo_scrub_now(struct nouveau_drm *drm, struct nouveau_mem *mem)
+{
+	struct nouveau_fence *fence;
+
+	if (nouveau_fence_create(&fence, drm->ttm.chan)) {
+		NV_ERROR(drm, "comp: can't clear %llu KiB of VRAM, leaking it\n",
+			 mem->mem.size >> 10);
+		mem->leak = true;
+		return;
+	}
+
+	nouveau_bo_scrub_clear(drm, mem, fence);
 }
 
 static int
@@ -1072,6 +1200,12 @@ nouveau_bo_move_m2mf(struct ttm_buffer_object *bo, int evict,
 	else
 		mutex_lock_nested(&cli->mutex, SINGLE_DEPTH_NESTING);
 
+	if (atomic_read(&chan->killed)) {
+		nouveau_bo_scrub_dead(drm, -ENODEV);
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
 	ret = nouveau_fence_sync(nouveau_bo(bo), chan, true, ctx->interruptible);
 	if (ret)
 		goto out_unlock;
@@ -1095,9 +1229,15 @@ nouveau_bo_move_m2mf(struct ttm_buffer_object *bo, int evict,
 	if (!nouveau_bo_move_wait(drm, chan, fence) ||
 	    dma_fence_get_status(&fence->base) < 0) {
 		nouveau_bo_move_abandon(drm, chan, bo);
+		nouveau_bo_scrub_dead(drm, -ENODEV);
 		ret = -ENODEV;
 		goto out_fence;
 	}
+
+	if (evict && bo->resource->mem_type == TTM_PL_VRAM &&
+	    drm->client.device.info.family >= NV_DEVICE_INFO_V0_TESLA &&
+	    nouveau_mem(bo->resource)->scrub)
+		nouveau_bo_scrub_now(drm, nouveau_mem(bo->resource));
 
 	ret = ttm_bo_move_accel_cleanup(bo, &fence->base, evict, false,
 					new_reg);
@@ -1106,6 +1246,257 @@ out_fence:
 out_unlock:
 	mutex_unlock(&cli->mutex);
 	return ret;
+}
+
+struct nouveau_bo_scrub {
+	struct dma_fence base;
+	struct dma_fence_cb cb;
+	struct work_struct work;
+	struct nouveau_drm *drm;
+	struct nouveau_mem *mem;
+	struct nouveau_fence *fence;
+	struct dma_fence *deps;
+};
+
+static const char *
+nouveau_bo_scrub_driver_name(struct dma_fence *fence)
+{
+	return "nouveau";
+}
+
+static const char *
+nouveau_bo_scrub_timeline_name(struct dma_fence *fence)
+{
+	return "scrub";
+}
+
+static const struct dma_fence_ops
+nouveau_bo_scrub_fence = {
+	.get_driver_name = nouveau_bo_scrub_driver_name,
+	.get_timeline_name = nouveau_bo_scrub_timeline_name,
+};
+
+static void
+nouveau_bo_scrub_work(struct work_struct *work)
+{
+	struct nouveau_bo_scrub *scrub = container_of(work, typeof(*scrub), work);
+	struct nouveau_drm *drm = scrub->drm;
+	struct nouveau_cli *cli = drm->ttm.chan->cli;
+	int ret = -ENODEV;
+	bool clear;
+
+	dma_fence_put(scrub->deps);
+
+	mutex_lock(&cli->mutex);
+	spin_lock(&drm->ttm.scrub.lock);
+	clear = drm->ttm.scrub.enabled && !drm->ttm.scrub.paused;
+	spin_unlock(&drm->ttm.scrub.lock);
+
+	if (clear)
+		ret = nouveau_bo_scrub_clear(drm, scrub->mem, scrub->fence);
+	else
+		kfree(scrub->fence);
+	mutex_unlock(&cli->mutex);
+
+	if (ret)
+		dma_fence_set_error(&scrub->base, ret);
+
+	dma_fence_signal(&scrub->base);
+	dma_fence_put(&scrub->base);
+
+	spin_lock(&drm->ttm.scrub.lock);
+	if (!--drm->ttm.scrub.pending)
+		wake_up_all(&drm->ttm.scrub.idle);
+	spin_unlock(&drm->ttm.scrub.lock);
+}
+
+static void
+nouveau_bo_scrub_ready(struct dma_fence *fence, struct dma_fence_cb *cb)
+{
+	struct nouveau_bo_scrub *scrub = container_of(cb, typeof(*scrub), cb);
+
+	queue_work(scrub->drm->ttm.scrub.wq, &scrub->work);
+}
+
+static bool
+nouveau_bo_scrub_idle(struct nouveau_drm *drm)
+{
+	bool idle;
+
+	spin_lock(&drm->ttm.scrub.lock);
+	idle = !drm->ttm.scrub.pending;
+	spin_unlock(&drm->ttm.scrub.lock);
+	return idle;
+}
+
+static void
+nouveau_bo_release_notify(struct ttm_buffer_object *bo)
+{
+	struct nouveau_drm *drm = nouveau_bdev(bo->bdev);
+	struct dma_resv *resv = &bo->base._resv;
+	struct nouveau_bo_scrub *scrub;
+	struct dma_fence **fences;
+	struct nouveau_mem *mem;
+	unsigned int count;
+	bool queued = false;
+	int tries = 0;
+
+	if (!READ_ONCE(drm->ttm.scrub.enabled) || !bo->resource ||
+	    bo->resource->mem_type != TTM_PL_VRAM)
+		return;
+
+	mem = nouveau_mem(bo->resource);
+	if (!mem->scrub)
+		return;
+
+	scrub = kzalloc_obj(*scrub);
+	if (!scrub)
+		goto fail;
+
+	if (nouveau_fence_create(&scrub->fence, drm->ttm.chan))
+		goto fail_free;
+
+	while (!dma_resv_trylock(resv)) {
+		if (++tries > 8)
+			goto fail_fence;
+
+		spin_lock(&bo->bdev->lru_lock);
+		spin_unlock(&bo->bdev->lru_lock);
+	}
+
+	if (dma_resv_reserve_fences(resv, 1) ||
+	    dma_resv_get_fences(resv, DMA_RESV_USAGE_BOOKKEEP, &count, &fences))
+		goto fail_unlock;
+
+	if (count > 1) {
+		struct dma_fence_unwrap *iter;
+		unsigned int i;
+
+		iter = kmalloc_array(count, sizeof(*iter), GFP_KERNEL);
+		if (iter)
+			scrub->deps = __dma_fence_unwrap_merge(count, fences, iter);
+		kfree(iter);
+
+		for (i = 0; i < count; i++)
+			dma_fence_put(fences[i]);
+		kfree(fences);
+
+		if (!scrub->deps)
+			goto fail_unlock;
+	} else {
+		scrub->deps = count ? fences[0] : NULL;
+		kfree(fences);
+	}
+
+	spin_lock(&drm->ttm.scrub.lock);
+	if (drm->ttm.scrub.enabled && !drm->ttm.scrub.paused) {
+		scrub->drm = drm;
+		scrub->mem = mem;
+		INIT_WORK(&scrub->work, nouveau_bo_scrub_work);
+		dma_fence_init(&scrub->base, &nouveau_bo_scrub_fence,
+			       &drm->ttm.scrub.fence_lock,
+			       dma_fence_context_alloc(1), 1);
+		dma_resv_add_fence(resv, &scrub->base, DMA_RESV_USAGE_KERNEL);
+		drm->ttm.scrub.pending++;
+
+		if (!scrub->deps ||
+		    dma_fence_add_callback(scrub->deps, &scrub->cb,
+					   nouveau_bo_scrub_ready))
+			queue_work(drm->ttm.scrub.wq, &scrub->work);
+
+		queued = true;
+	}
+	spin_unlock(&drm->ttm.scrub.lock);
+	dma_resv_unlock(resv);
+
+	if (!queued) {
+		dma_fence_put(scrub->deps);
+		kfree(scrub->fence);
+		kfree(scrub);
+	}
+	return;
+
+fail_unlock:
+	dma_resv_unlock(resv);
+fail_fence:
+	kfree(scrub->fence);
+fail_free:
+	kfree(scrub);
+fail:
+	NV_ERROR(drm, "comp: can't clear %llu KiB of VRAM on release\n",
+		 mem->mem.size >> 10);
+}
+
+static void
+nouveau_bo_scrub_enable(struct nouveau_drm *drm)
+{
+	long mode;
+
+	if (!drm->ttm.clear || !nouveau_bo_comp_hw(drm))
+		return;
+
+	mode = nvkm_longopt(nvxx_device(drm)->cfgopt, "NvCompScrub", 1);
+	if (mode <= 0) {
+		NV_INFO(drm, "comp: not clearing compressible VRAM before reuse (NvCompScrub=0)\n");
+		return;
+	}
+
+	drm->ttm.scrub.wq = alloc_workqueue("nouveau_scrub",
+					    WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	if (!drm->ttm.scrub.wq) {
+		NV_ERROR(drm, "comp: can't clear VRAM before reuse, no workqueue\n");
+		return;
+	}
+
+	spin_lock(&drm->ttm.scrub.lock);
+	drm->ttm.scrub.all = mode >= 2;
+	drm->ttm.scrub.enabled = true;
+	spin_unlock(&drm->ttm.scrub.lock);
+
+	NV_INFO(drm, "comp: clearing %s VRAM before reuse\n",
+		mode >= 2 ? "all" : "compressible");
+}
+
+void
+nouveau_bo_scrub_suspend(struct nouveau_drm *drm)
+{
+	spin_lock(&drm->ttm.scrub.lock);
+	drm->ttm.scrub.paused = true;
+	spin_unlock(&drm->ttm.scrub.lock);
+
+	if (!wait_event_timeout(drm->ttm.scrub.idle,
+				nouveau_bo_scrub_idle(drm), 10 * HZ))
+		NV_ERROR(drm, "comp: VRAM clears still pending at suspend\n");
+}
+
+void
+nouveau_bo_scrub_resume(struct nouveau_drm *drm)
+{
+	spin_lock(&drm->ttm.scrub.lock);
+	drm->ttm.scrub.paused = false;
+	spin_unlock(&drm->ttm.scrub.lock);
+}
+
+void
+nouveau_bo_scrub_fini(struct nouveau_drm *drm)
+{
+	spin_lock(&drm->ttm.scrub.lock);
+	drm->ttm.scrub.enabled = false;
+	spin_unlock(&drm->ttm.scrub.lock);
+
+	if (drm->ttm.scrub.wq) {
+		wait_event(drm->ttm.scrub.idle, nouveau_bo_scrub_idle(drm));
+		destroy_workqueue(drm->ttm.scrub.wq);
+		drm->ttm.scrub.wq = NULL;
+	}
+}
+
+void
+nouveau_bo_scrub_init(struct nouveau_drm *drm)
+{
+	spin_lock_init(&drm->ttm.scrub.lock);
+	spin_lock_init(&drm->ttm.scrub.fence_lock);
+	init_waitqueue_head(&drm->ttm.scrub.idle);
 }
 
 void
@@ -1174,6 +1565,8 @@ nouveau_bo_move_init(struct nouveau_drm *drm)
 			}
 
 			drm->ttm.move = mthd->exec;
+			if (mthd->exec == nve0_bo_move_copy)
+				drm->ttm.clear = nve0_bo_move_clear;
 			drm->ttm.chan = chan;
 			name = mthd->name;
 			break;
@@ -1181,6 +1574,8 @@ nouveau_bo_move_init(struct nouveau_drm *drm)
 	} while ((++mthd)->exec);
 
 	NV_INFO(drm, "MM: using %s for buffer copies\n", name);
+
+	nouveau_bo_scrub_enable(drm);
 }
 
 static void nouveau_bo_move_ntfy(struct ttm_buffer_object *bo,
@@ -1261,6 +1656,44 @@ nouveau_bo_vm_cleanup(struct ttm_buffer_object *bo,
 }
 
 static int
+nouveau_bo_move_memcpy(struct ttm_buffer_object *bo,
+		       struct ttm_operation_ctx *ctx,
+		       struct ttm_resource *new_reg)
+{
+	struct nouveau_drm *drm = nouveau_bdev(bo->bdev);
+	struct nouveau_cli *cli;
+	struct nouveau_mem *mem;
+	int ret;
+
+	if (bo->resource->mem_type != TTM_PL_VRAM ||
+	    !READ_ONCE(drm->ttm.scrub.enabled) ||
+	    !nouveau_mem(bo->resource)->scrub)
+		return ttm_bo_move_memcpy(bo, ctx, new_reg);
+
+	mem = nouveau_mem(bo->resource);
+	mem->leak = true;
+	ret = ttm_bo_move_memcpy(bo, ctx, new_reg);
+	mem->leak = false;
+	if (ret)
+		return ret;
+
+	cli = drm->ttm.chan->cli;
+	if (drm_drv_uses_atomic_modeset(drm->dev))
+		mutex_lock(&cli->mutex);
+	else
+		mutex_lock_nested(&cli->mutex, SINGLE_DEPTH_NESTING);
+	nouveau_bo_scrub_now(drm, mem);
+	mutex_unlock(&cli->mutex);
+
+	if (!mem->leak) {
+		nouveau_mem_fini(mem);
+		kfree(mem);
+	}
+
+	return 0;
+}
+
+static int
 nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 		struct ttm_operation_ctx *ctx,
 		struct ttm_resource *new_reg,
@@ -1337,7 +1770,7 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 		if (ret != -ERESTARTSYS && ret != -EINTR &&
 		    dma_resv_test_signaled(bo->base.resv,
 					   DMA_RESV_USAGE_BOOKKEEP))
-			ret = ttm_bo_move_memcpy(bo, ctx, new_reg);
+			ret = nouveau_bo_move_memcpy(bo, ctx, new_reg);
 	}
 
 out:
@@ -1627,6 +2060,7 @@ struct ttm_device_funcs nouveau_bo_driver = {
 	.eviction_valuable = ttm_bo_eviction_valuable,
 	.evict_flags = nouveau_bo_evict_flags,
 	.delete_mem_notify = nouveau_bo_delete_mem_notify,
+	.release_notify = nouveau_bo_release_notify,
 	.move = nouveau_bo_move,
 	.io_mem_reserve = &nouveau_ttm_io_mem_reserve,
 	.io_mem_free = &nouveau_ttm_io_mem_free,

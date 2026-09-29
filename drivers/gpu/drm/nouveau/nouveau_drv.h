@@ -261,8 +261,20 @@ struct nouveau_drm {
 		int (*move)(struct nouveau_channel *,
 			    struct ttm_buffer_object *,
 			    struct ttm_resource *, struct ttm_resource *);
+		int (*clear)(struct nouveau_channel *, u64 addr, u64 size);
 		struct nouveau_channel *chan;
 		struct nvif_object copy;
+		struct {
+			spinlock_t lock;
+			bool enabled;
+			bool all;
+			bool paused;
+			bool dead;
+			unsigned int pending;
+			wait_queue_head_t idle;
+			struct workqueue_struct *wq;
+			spinlock_t fence_lock;
+		} scrub;
 		int mtrr;
 		int type_vram;
 		int type_host[2];

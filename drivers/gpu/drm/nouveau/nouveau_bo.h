@@ -9,6 +9,7 @@ struct nouveau_channel;
 struct nouveau_cli;
 struct nouveau_drm;
 struct nouveau_fence;
+struct nouveau_mem;
 struct nouveau_vma;
 
 struct nouveau_bo {
@@ -66,6 +67,13 @@ nouveau_bo_fini(struct nouveau_bo *bo)
 extern struct ttm_device_funcs nouveau_bo_driver;
 
 void nouveau_bo_comp_uncharge(struct nouveau_drm *, struct nouveau_bo *);
+bool nouveau_bo_comp_hw(struct nouveau_drm *);
+
+int nouveau_bo_scrub_map(struct nouveau_drm *, struct nouveau_mem *);
+void nouveau_bo_scrub_init(struct nouveau_drm *);
+void nouveau_bo_scrub_fini(struct nouveau_drm *);
+void nouveau_bo_scrub_suspend(struct nouveau_drm *);
+void nouveau_bo_scrub_resume(struct nouveau_drm *);
 
 void nouveau_bo_move_init(struct nouveau_drm *);
 struct nouveau_bo *nouveau_bo_alloc(struct nouveau_cli *, u64 *size, int *align,
@@ -136,6 +144,7 @@ int nvc0_bo_move_copy(struct nouveau_channel *, struct ttm_buffer_object *,
 int nve0_bo_move_init(struct nouveau_channel *, u32);
 int nve0_bo_move_copy(struct nouveau_channel *, struct ttm_buffer_object *,
 		      struct ttm_resource *, struct ttm_resource *);
+int nve0_bo_move_clear(struct nouveau_channel *, u64 addr, u64 size);
 
 #define NVBO_WR32_(b,o,dr,f) nouveau_bo_wr32((b), (o)/4 + (dr), (f))
 #define NVBO_RD32_(b,o,dr)   nouveau_bo_rd32((b), (o)/4 + (dr))

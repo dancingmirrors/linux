@@ -653,9 +653,13 @@ static u8
 op_map_kind(struct nouveau_uvmm *uvmm, struct drm_gpuva_op_map *op, u8 kind)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(op->gem.obj);
-	struct nvif_mmu *mmu = &uvmm->vmm.cli->mmu;
+	struct nouveau_cli *cli = uvmm->vmm.cli;
+	struct nvif_mmu *mmu = &cli->mmu;
 
-	if (nvbo->comp_denied && kind < mmu->kind_nr)
+	if (kind >= mmu->kind_nr)
+		return kind;
+
+	if (nvbo->comp_denied || (!nvbo->comp && nouveau_bo_comp_hw(cli->drm)))
 		return mmu->kind[kind];
 
 	return kind;

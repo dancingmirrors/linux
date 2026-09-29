@@ -457,6 +457,7 @@ nouveau_accel_gr_init(struct nouveau_drm *drm)
 static void
 nouveau_accel_fini(struct nouveau_drm *drm)
 {
+	nouveau_bo_scrub_fini(drm);
 	nouveau_accel_ce_fini(drm);
 	nouveau_accel_gr_fini(drm);
 	if (drm->fence)
@@ -984,6 +985,8 @@ nouveau_do_suspend(struct nouveau_drm *drm, bool runtime)
 		goto fail_display;
 	}
 
+	nouveau_bo_scrub_suspend(drm);
+
 	NV_DEBUG(drm, "waiting for kernel channels to go idle...\n");
 	if (drm->cechan) {
 		ret = nouveau_channel_idle(drm->cechan);
@@ -1020,6 +1023,8 @@ fail_client:
 		nouveau_fence(drm)->resume(drm);
 
 fail_display:
+	nouveau_bo_scrub_resume(drm);
+
 	if (dev->mode_config.num_crtc) {
 		NV_DEBUG(drm, "resuming display...\n");
 		nouveau_display_resume(dev, runtime);
@@ -1047,6 +1052,8 @@ nouveau_do_resume(struct nouveau_drm *drm, bool runtime)
 	NV_DEBUG(drm, "resuming fence...\n");
 	if (drm->fence && nouveau_fence(drm)->resume)
 		nouveau_fence(drm)->resume(drm);
+
+	nouveau_bo_scrub_resume(drm);
 
 	nouveau_run_vbios_init(dev);
 

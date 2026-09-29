@@ -28,11 +28,65 @@
  */
 #include "nouveau_bo.h"
 #include "nouveau_dma.h"
+#include "nouveau_drv.h"
 #include "nouveau_mem.h"
 
+#include <nvif/class.h>
 #include <nvif/push906f.h>
 
 #include <nvhw/class/cla0b5.h>
+
+#define NVC5B5_LAUNCH_DMA_DISABLE_PLC                                           26:26
+#define NVC5B5_LAUNCH_DMA_DISABLE_PLC_TRUE                                      (0x00000001)
+
+int
+nve0_bo_move_clear(struct nouveau_channel *chan, u64 addr, u64 size)
+{
+	struct nvif_push *push = &chan->chan.push;
+	u32 launch = 0;
+	int ret;
+
+	if (chan->cli->drm->ttm.copy.oclass >= TURING_DMA_COPY_A)
+		launch |= NVDEF(NVC5B5, LAUNCH_DMA, DISABLE_PLC, TRUE);
+
+	ret = PUSH_WAIT(push, 4 + 7 * DIV_ROUND_UP_ULL(size, SZ_1G));
+	if (ret)
+		return ret;
+
+	PUSH_MTHD(push, NVA0B5, SET_REMAP_CONST_A, 0);
+	PUSH_MTHD(push, NVA0B5, SET_REMAP_COMPONENTS,
+		  NVDEF(NVA0B5, SET_REMAP_COMPONENTS, DST_X, CONST_A) |
+		  NVDEF(NVA0B5, SET_REMAP_COMPONENTS, COMPONENT_SIZE, FOUR) |
+		  NVDEF(NVA0B5, SET_REMAP_COMPONENTS, NUM_DST_COMPONENTS, ONE));
+
+	while (size) {
+		u64 len = min_t(u64, size, SZ_1G);
+
+		PUSH_MTHD(push, NVA0B5, OFFSET_OUT_UPPER,
+			  NVVAL(NVA0B5, OFFSET_OUT_UPPER, UPPER, upper_32_bits(addr)),
+
+					OFFSET_OUT_LOWER, lower_32_bits(addr));
+
+		PUSH_MTHD(push, NVA0B5, LINE_LENGTH_IN, len >> 2);
+
+		PUSH_MTHD(push, NVA0B5, LAUNCH_DMA, launch |
+			  NVDEF(NVA0B5, LAUNCH_DMA, DATA_TRANSFER_TYPE, NON_PIPELINED) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, FLUSH_ENABLE, TRUE) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, SEMAPHORE_TYPE, NONE) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, INTERRUPT_TYPE, NONE) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, SRC_MEMORY_LAYOUT, PITCH) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, DST_MEMORY_LAYOUT, PITCH) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, MULTI_LINE_ENABLE, FALSE) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, REMAP_ENABLE, TRUE) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, SRC_TYPE, VIRTUAL) |
+			  NVDEF(NVA0B5, LAUNCH_DMA, DST_TYPE, VIRTUAL));
+
+		addr += len;
+		size -= len;
+	}
+
+	return 0;
+}
 
 int
 nve0_bo_move_copy(struct nouveau_channel *chan, struct ttm_buffer_object *bo,

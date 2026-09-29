@@ -86,12 +86,39 @@ nouveau_vram_manager_new(struct ttm_resource_manager *man,
 		return ret;
 	}
 
+	if (READ_ONCE(drm->ttm.scrub.enabled) &&
+	    (nvbo->comp || drm->ttm.scrub.all)) {
+		ret = nouveau_bo_scrub_map(drm, nouveau_mem(*res));
+		if (ret) {
+			nouveau_mem_del(man, *res);
+			return -ENOSPC;
+		}
+
+		nouveau_mem(*res)->scrub = true;
+	}
+
 	return 0;
+}
+
+static void
+nouveau_vram_manager_del(struct ttm_resource_manager *man,
+			 struct ttm_resource *reg)
+{
+	struct nouveau_mem *mem = nouveau_mem(reg);
+
+	if (mem->leak) {
+		nvif_vmm_put(&mem->drm->client.vmm.vmm, &mem->vma[1]);
+		nvif_vmm_put(&mem->drm->client.vmm.vmm, &mem->vma[0]);
+		ttm_resource_fini(man, reg);
+		return;
+	}
+
+	nouveau_mem_del(man, reg);
 }
 
 const struct ttm_resource_manager_func nouveau_vram_manager = {
 	.alloc = nouveau_vram_manager_new,
-	.free = nouveau_manager_del,
+	.free = nouveau_vram_manager_del,
 	.intersects = nouveau_manager_intersects,
 	.compatible = nouveau_manager_compatible,
 };
@@ -274,6 +301,8 @@ nouveau_ttm_init(struct nouveau_drm *drm)
 	struct nvif_mmu *mmu = &drm->client.mmu;
 	struct drm_device *dev = drm->dev;
 	int typei, ret;
+
+	nouveau_bo_scrub_init(drm);
 
 	ret = nouveau_ttm_init_host(drm, 0);
 	if (ret)

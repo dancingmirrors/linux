@@ -85,11 +85,29 @@ r570_gsp_xlat_mc_engine_idx(u32 mc_engine_idx, enum nvkm_subdev_type *ptype, int
 	}
 }
 
+static const char *
+r570_gsp_comptag_policy(u32 policy)
+{
+	switch (policy) {
+	case NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO_POLICY_LEGACY:
+		return "legacy";
+	case NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO_POLICY_1TO1:
+		return "1:1";
+	case NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO_POLICY_1TO4:
+		return "1:4";
+	case NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO_POLICY_RAWMODE:
+		return "raw";
+	default:
+		return "unknown";
+	}
+}
+
 static u64
 r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
 {
 	NV0080_CTRL_FB_GET_COMPBIT_STORE_INFO_PARAMS *ctrl;
-	u64 by_max_line, by_coverage;
+	const char *policy, *aspace;
+	u64 coverage;
 
 	ctrl = nvkm_gsp_rm_ctrl_rd(&gsp->internal.device.object,
 				   NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO,
@@ -99,27 +117,41 @@ r570_gsp_get_compbit_store_info(struct nvkm_gsp *gsp, u32 slices)
 		return 0;
 	}
 
-	by_max_line = (u64)ctrl->MaxCompbitLine << gsp->fb.comp.page_shift;
-	by_coverage = (u64)ctrl->cbcCoveragePerSlice * slices;
+	policy = r570_gsp_comptag_policy(ctrl->comptaglineAllocationPolicy);
+	coverage = (u64)ctrl->cbcCoveragePerSlice * slices;
 
-	nvkm_debug(&gsp->subdev, "cbc: store 0x%llx bytes @ 0x%llx aspace:%d policy:%d\n",
-		   ctrl->Size, ctrl->Address, ctrl->AddressSpace,
-		   ctrl->comptaglineAllocationPolicy);
+	switch (ctrl->AddressSpace) {
+	case NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO_ADDRESS_SPACE_FBMEM:
+		aspace = "VRAM";
+		break;
+	case NV0080_CTRL_CMD_FB_GET_COMPBIT_STORE_INFO_ADDRESS_SPACE_SYSMEM:
+		aspace = "system memory";
+		break;
+	default:
+		aspace = "unknown memory";
+		break;
+	}
 
-	nvkm_debug(&gsp->subdev, "cbc: max_line:%d tags/cacheline:%d cacheline:%d B "
-		   "(%d B/slice) gobs/tag/slice:%d\n",
-		   ctrl->MaxCompbitLine, ctrl->comptagsPerCacheLine, ctrl->cacheLineSize,
-		   ctrl->cacheLineSizePerSlice, ctrl->gobsPerComptagPerSlice);
+	if (ctrl->Size)
+		nvkm_debug(&gsp->subdev, "cbc: %s comptags, %llu KiB backing store at 0x%llx in %s\n",
+			   policy, ctrl->Size >> 10, ctrl->Address, aspace);
+	else
+		nvkm_debug(&gsp->subdev, "cbc: %s comptags, no backing store\n", policy);
 
-	nvkm_debug(&gsp->subdev, "cbc: covers %llu MiB by max_line, %llu MiB by "
-		   "coverage/slice (%d x %d)\n",
-		   by_max_line >> 20, by_coverage >> 20,
-		   ctrl->cbcCoveragePerSlice, slices);
+	if (ctrl->MaxCompbitLine)
+		nvkm_debug(&gsp->subdev, "cbc: %u comptag lines, for %llu MiB\n",
+			   ctrl->MaxCompbitLine,
+			   ((u64)ctrl->MaxCompbitLine << gsp->fb.comp.page_shift) >> 20);
+
+	nvkm_debug(&gsp->subdev,
+		   "cbc: compbit cache covers %llu MiB (%u KiB x %u slices), %u tags per %u B line\n",
+		   coverage >> 20, ctrl->cbcCoveragePerSlice >> 10, slices,
+		   ctrl->comptagsPerCacheLine, ctrl->cacheLineSize);
 
 	gsp->fb.comp.cbc_size = ctrl->Size;
 
 	nvkm_gsp_rm_ctrl_done(&gsp->internal.device.object, ctrl);
-	return by_coverage;
+	return coverage;
 }
 
 static void
@@ -156,18 +188,30 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 		gsp->fb.comp.disabled = true;
 	}
 
-	nvkm_debug(&gsp->subdev, "comp: disabled:%d plc_disabled:%d page_shift:%d "
-		   "(cbc_disabled:%d 1:1:%d raw:%d)\n",
-		   gsp->fb.comp.disabled, gsp->fb.comp.plc_disabled, gsp->fb.comp.page_shift,
-		   ctrl->bDisableCompbitBacking, ctrl->bOneToOneComptagLineAllocation,
-		   ctrl->bUseRawModeComptaglineAllocation);
+	if (!gsp->fb.comp.disabled && !gsp->fb.comp.plc_disabled &&
+	    (device->card_type == GH100 || device->card_type >= GB10x) &&
+	    !nvkm_boolopt(device->cfgopt, "NvCompPlc", true)) {
+		nvkm_info(&gsp->subdev, "comp: post-L2 compression disabled by NvCompPlc=0\n");
+		gsp->fb.comp.plc_disabled = true;
+	}
 
-	nvkm_debug(&gsp->subdev, "comp: l2:%llu KiB ltc:%d lts/ltc:%d "
-		   "compr_page:%d B\n",
-		   ctrl->l2CacheSize >> 10, ctrl->ltcCount, ctrl->ltsPerLtcCount,
-		   ctrl->comprPageSize);
+	if (!fw_comp)
+		nvkm_debug(&gsp->subdev, "comp: unavailable (backing:%d 1:1:%d 1:4:%d raw:%d)\n",
+			   !ctrl->bDisableCompbitBacking, ctrl->bOneToOneComptagLineAllocation,
+			   ctrl->bUseOneToFourComptagLineAllocation,
+			   ctrl->bUseRawModeComptaglineAllocation);
+	else if (gsp->fb.comp.disabled)
+		nvkm_debug(&gsp->subdev, "comp: off by NvComp=0\n");
+	else
+		nvkm_debug(&gsp->subdev, "comp: %s comptags, %u KiB pages, post-L2 compression %s\n",
+			   ctrl->bUseRawModeComptaglineAllocation ? "raw" : "1:1",
+			   ctrl->comprPageSize >> 10,
+			   gsp->fb.comp.plc_disabled ? "off" : "on");
 
 	slices = ctrl->ltcCount * ctrl->ltsPerLtcCount;
+
+	nvkm_debug(&gsp->subdev, "comp: %llu KiB of L2 in %u slices (%u x %u)\n",
+		   ctrl->l2CacheSize >> 10, slices, ctrl->ltcCount, ctrl->ltsPerLtcCount);
 
 	if (gb20x && slices && ctrl->comprPageSize)
 		dflt = 256ULL * slices * ctrl->comprPageSize;
@@ -189,9 +233,13 @@ r570_gsp_get_static_info_memsys(struct nvkm_gsp *gsp)
 
 	gsp->fb.comp.limit = dflt;
 
-	nvkm_debug(&gsp->subdev, "comp: limit %llu MiB (%u slices, cbc coverage %llu MiB%s)\n",
-		   gsp->fb.comp.limit >> 20, slices, coverage >> 20,
-		   gb20x ? "" : ", not GB20x");
+	if (!gsp->fb.comp.limit)
+		nvkm_debug(&gsp->subdev, "comp: no budget%s\n",
+			   opt == 0 ? ", NvCompLimitMiB=0" : "");
+	else
+		nvkm_debug(&gsp->subdev, "comp: budget of %llu MiB%s\n",
+			   gsp->fb.comp.limit >> 20,
+			   opt > 0 ? ", NvCompLimitMiB" : ", the GB20x default");
 }
 
 static int
