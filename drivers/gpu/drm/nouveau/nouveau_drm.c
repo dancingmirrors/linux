@@ -1117,18 +1117,22 @@ nouveau_drm_kill_channels(struct nouveau_drm *drm, bool block)
 	return done;
 }
 
+#define NOUVEAU_RECOVER_MAX	3		/* re-binds per window */
+#define NOUVEAU_RECOVER_WINDOW	(10 * 60)	/* seconds */
 #define NOUVEAU_RECOVER_DELAY	1000		/* ms */
-
-struct nouveau_recover_data {
-	struct list_head head;
-	bool pending;
-	struct task_struct *task;
-	char name[];
-};
 
 struct nouveau_recover_work {
 	struct delayed_work work;
 	struct device *dev;
+};
+
+struct nouveau_recover_data {
+	struct list_head head;
+	unsigned int count;
+	time64_t first;
+	struct nouveau_recover_work *queued;
+	struct task_struct *task;
+	char name[];
 };
 
 static LIST_HEAD(nouveau_recover_list);
@@ -1174,8 +1178,8 @@ nouveau_drm_recover_cancel(struct device *dev)
 
 	mutex_lock(&nouveau_recover_lock);
 	data = nouveau_recover_find(dev);
-	if (data && data->task != current)
-		data->pending = false;
+	if (data)
+		data->queued = NULL;
 	mutex_unlock(&nouveau_recover_lock);
 }
 
@@ -1204,9 +1208,11 @@ nouveau_drm_recover_work(struct work_struct *work)
 
 	mutex_lock(&nouveau_recover_lock);
 	data = nouveau_recover_find(dev);
-	go = data && data->pending;
-	if (go)
+	go = data && data->queued == rw;
+	if (go) {
+		data->queued = NULL;
 		data->task = current;
+	}
 	mutex_unlock(&nouveau_recover_lock);
 
 	if (go) {
@@ -1217,10 +1223,8 @@ nouveau_drm_recover_work(struct work_struct *work)
 
 		mutex_lock(&nouveau_recover_lock);
 		data = nouveau_recover_find(dev);
-		if (data) {
+		if (data)
 			data->task = NULL;
-			data->pending = false;
-		}
 		mutex_unlock(&nouveau_recover_lock);
 	}
 
@@ -1235,6 +1239,7 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 	struct device *dev = drm->dev->dev;
 	struct nouveau_recover_data *data;
 	struct nouveau_recover_work *rw;
+	time64_t now = ktime_get_boottime_seconds();
 
 	if (!nouveau_pmops_runtime())
 		return;
@@ -1245,6 +1250,22 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 	if (!data)
 		goto unlock;
 
+	if (data->queued || data->task) {
+		NV_ERROR(drm, "not re-binding again: a re-bind is already in progress\n");
+		goto unlock;
+	}
+
+	if (!data->count || now - data->first > NOUVEAU_RECOVER_WINDOW) {
+		data->first = now;
+		data->count = 0;
+	}
+
+	if (data->count >= NOUVEAU_RECOVER_MAX) {
+		NV_ERROR(drm, "not re-binding again: %u attempts in %llu seconds\n",
+			 data->count, (unsigned long long)(now - data->first));
+		goto unlock;
+	}
+
 	if (!try_module_get(THIS_MODULE))
 		goto unlock;
 
@@ -1254,9 +1275,10 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 		goto unlock;
 	}
 
-	data->pending = true;
+	data->count++;
+	data->queued = rw;
 
-	NV_ERROR(drm, "re-binding the driver to recover\n");
+	NV_ERROR(drm, "re-binding the driver to recover (attempt %u)\n", data->count);
 
 	rw->dev = get_device(dev);
 	INIT_DELAYED_WORK(&rw->work, nouveau_drm_recover_work);
