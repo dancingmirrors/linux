@@ -521,7 +521,7 @@ resolve_priv() {
 			return 0
 		fi
 	done
-	die "'$destdir' needs root; install neither doas nor sudo, pass -u CMD, or run the install stage as root"
+	die "'$destdir' needs root"
 }
 
 case $stage in
