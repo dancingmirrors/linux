@@ -157,10 +157,6 @@ struct nvkm_gsp {
 	} sr;
 
 	struct {
-		bool use_raw_mode_comptagline_alloc;
-	} memsys;
-
-	struct {
 		struct nvkm_gsp_mem mem;
 
 		struct {
