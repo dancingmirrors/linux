@@ -107,17 +107,25 @@ gh100_gsp_wait_target_mask(struct nvkm_gsp *gsp)
 }
 
 static void
-gh100_gsp_boot_failed(struct nvkm_gsp *gsp)
+gh100_gsp_boot_failed(struct nvkm_gsp *gsp, int ret)
 {
 	struct nvkm_falcon *falcon = &gsp->falcon;
 	u32 mbox0 = nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX0);
+	u32 cpuctl = nvkm_falcon_rd32(falcon, falcon->addr2 + NV_PRISCV_RISCV_CPUCTL);
+	const bool halted = NVVAL_GET(cpuctl, NV_PRISCV, RISCV_CPUCTL, HALTED);
 
-	nvkm_error(&gsp->subdev, "GSP-RM didn't boot: cpuctl %08x, hwcfg2 %08x, mbox %08x %08x\n",
-		   nvkm_falcon_rd32(falcon, falcon->addr2 + NV_PRISCV_RISCV_CPUCTL),
+	nvkm_error(&gsp->subdev,
+		   "GSP-RM failed to come up (%d): RISC-V %s, cpuctl %08x, hwcfg2 %08x, mbox %08x %08x\n",
+		   ret, halted ? "halted" : "still running", cpuctl,
 		   nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_HWCFG2),
 		   mbox0, nvkm_falcon_rd32(falcon, NV_PFALCON_FALCON_MAILBOX1));
 
-	r535_gsp_crashcat_check(gsp);
+	if (r535_gsp_crashcat_check(gsp) <= 0 && !gsp->crashcat.reported)
+		nvkm_error(&gsp->subdev, "%s: GSP-RM %s without reporting a crash, %s INIT_DONE\n",
+			   r535_gsp_crashcat_status(gsp),
+			   halted ? "halted" :
+			   ret == -ETIMEDOUT ? "stopped answering" : "failed",
+			   gsp->running ? "after" : "before");
 
 	if (!gsp->crashcat.valid && mbox0 && !(mbox0 & ~0xffU))
 		nvkm_error(&gsp->subdev,
@@ -243,7 +251,7 @@ gh100_gsp_init(struct nvkm_gsp *gsp)
 
 	ret = r535_gsp_init(gsp);
 	if (ret)
-		gh100_gsp_boot_failed(gsp);
+		gh100_gsp_boot_failed(gsp, ret);
 
 	return ret;
 }

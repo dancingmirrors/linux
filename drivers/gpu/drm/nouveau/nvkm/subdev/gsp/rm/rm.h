@@ -179,6 +179,7 @@ int r535_gsp_gcx_ready(struct nvkm_gsp *, bool *gc6, bool *gcoff);
 u64 r535_gsp_sr_sysmem_size(struct nvkm_gsp *);
 bool r535_gsp_crashcat_pending(struct nvkm_gsp *);
 int r535_gsp_crashcat_check(struct nvkm_gsp *);
+const char *r535_gsp_crashcat_status(struct nvkm_gsp *);
 void r535_gsp_crashcat_reset(struct nvkm_gsp *);
 void r535_gsp_dead(struct nvkm_gsp *);
 void r535_gsp_lost(struct nvkm_gsp *);

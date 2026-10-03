@@ -74,17 +74,29 @@ static const struct vm_operations_struct nouveau_ttm_vm_ops = {
 };
 
 void
+nouveau_gem_track(struct nouveau_bo *nvbo)
+{
+	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
+
+	nvbo->gem_counted = true;
+	atomic_inc(&drm->gem.live);
+}
+
+void
 nouveau_gem_object_del(struct drm_gem_object *gem)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(gem);
 	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
 	struct device *dev = drm->dev->dev;
+	const bool counted = nvbo->gem_counted;
 	int ret;
 
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0 && ret != -EACCES) {
 		if (WARN_ON(!drm->lost)) {
 			pm_runtime_put_autosuspend(dev);
+			if (counted)
+				atomic_dec(&drm->gem.live);
 			return;
 		}
 	}
@@ -93,6 +105,11 @@ nouveau_gem_object_del(struct drm_gem_object *gem)
 
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
+
+	if (counted) {
+		smp_mb__before_atomic();
+		atomic_dec(&drm->gem.live);
+	}
 }
 
 int
@@ -293,6 +310,8 @@ nouveau_gem_new(struct nouveau_cli *cli, u64 size, int align, uint32_t domain,
 		nvbo->r_obj = drm_gpuvm_resv_obj(&uvmm->base);
 		drm_gem_object_get(nvbo->r_obj);
 	}
+
+	nouveau_gem_track(nvbo);
 
 	*pnvbo = nvbo;
 	return 0;

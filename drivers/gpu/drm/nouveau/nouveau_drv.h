@@ -289,6 +289,8 @@ struct nouveau_drm {
 	struct {
 		u64 vram_available;
 		u64 gart_available;
+		/* See nouveau_gem_track(). */
+		atomic_t live;
 	} gem;
 
 	/* synchronisation */

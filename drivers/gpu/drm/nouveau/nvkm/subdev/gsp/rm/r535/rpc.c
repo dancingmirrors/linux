@@ -181,11 +181,15 @@ r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 gsp_rpc_len, int *ptime)
 			   rptr, *gsp->msgq.wptr, gsp->msgq.cnt,
 			   nvkm_falcon_rd32(&gsp->falcon, 0x040),
 			   nvkm_falcon_rd32(&gsp->falcon, 0x044));
-		r535_gsp_crashcat_check(gsp);
+		if (r535_gsp_crashcat_check(gsp) <= 0 && !gsp->crashcat.reported)
+			nvkm_error(&gsp->subdev,
+				   "%s, GSP-RM stopped answering without reporting a crash\n",
+				   r535_gsp_crashcat_status(gsp));
 		gsp->dead = true;
 		return -ETIMEDOUT;
 	}
 
+	gsp->crashcat.reported = false;
 	return used;
 }
 

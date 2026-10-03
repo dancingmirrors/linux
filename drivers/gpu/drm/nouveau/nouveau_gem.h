@@ -13,6 +13,8 @@ nouveau_gem_object(struct drm_gem_object *gem)
 	return gem ? container_of(gem, struct nouveau_bo, bo.base) : NULL;
 }
 
+extern void nouveau_gem_track(struct nouveau_bo *);
+
 /* nouveau_gem.c */
 extern int nouveau_gem_new(struct nouveau_cli *, u64 size, int align,
 			   uint32_t domain, uint32_t tile_mode,

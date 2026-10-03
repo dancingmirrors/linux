@@ -405,8 +405,10 @@ r535_gsp_crashcat_log(struct nvkm_gsp *gsp, const u8 *buf, u32 len, bool *fatal)
 		pos += 8 + size;
 	}
 
-	if (reports)
+	if (reports) {
 		nvkm_error(subdev, "------------[ end crash report ]------------\n");
+		gsp->crashcat.reported = true;
+	}
 
 	return pos;
 }
@@ -459,7 +461,7 @@ r535_gsp_crashcat_consume(struct nvkm_gsp *gsp, bool whole)
 		return -ENOMEM;
 
 	if (put == get) {
-		nvkm_error(subdev, "crashcat: put pointer never published, reading the whole queue\n");
+		nvkm_debug(subdev, "crashcat: put pointer not published after acknowledging the wayfinder, scanning the whole queue\n");
 		ret = r535_gsp_crashcat_read(gsp, 0, buf, size);
 		len = size;
 	} else if (put > get) {
@@ -480,15 +482,28 @@ r535_gsp_crashcat_consume(struct nvkm_gsp *gsp, bool whole)
 
 	used = r535_gsp_crashcat_log(gsp, buf, len, &fatal);
 	if (!used) {
-		nvkm_error(subdev, "crashcat: no report in the queue\n");
-		print_hex_dump(KERN_ERR, "crashcat: ", DUMP_PREFIX_OFFSET, 16, 4, buf,
-			       min_t(u32, len, 64), false);
-		ret = -ENODATA;
+		if (put != get) {
+			nvkm_error(subdev, "crashcat: unrecognised data in the report queue (put:0x%x get:0x%x)\n",
+				   put, get);
+			print_hex_dump(KERN_ERR, "crashcat: ", DUMP_PREFIX_OFFSET, 16, 4,
+				       buf, min_t(u32, len, 64), false);
+			ret = -ENODATA;
+		} else {
+			nvkm_info(subdev, "crashcat: wayfinder published but the report queue is empty, nothing was crash-reported\n");
+			print_hex_dump_debug("crashcat: ", DUMP_PREFIX_OFFSET, 16, 4,
+					     buf, min_t(u32, len, 64), false);
+			ret = 0;
+		}
 	} else {
 		ret = fatal ? 2 : 1;
 	}
 
-	nvkm_falcon_wr32(falcon, gsp->crashcat.get_reg, put != get ? put : used % size);
+	if (put != get) {
+		nvkm_falcon_wr32(falcon, gsp->crashcat.get_reg, put);
+	} else if (used) {
+		nvkm_falcon_wr32(falcon, gsp->crashcat.put_reg, used % size);
+		nvkm_falcon_wr32(falcon, gsp->crashcat.get_reg, used % size);
+	}
 
 done:
 	kvfree(buf);
@@ -528,9 +543,9 @@ r535_gsp_crashcat_locate(struct nvkm_gsp *gsp, u32 l0)
 	gsp->crashcat.aperture = NV_CRASHCAT_WAYFINDER_L1_V1_QUEUE_APERTURE(l1);
 	gsp->crashcat.size = (NV_CRASHCAT_WAYFINDER_L1_V1_QUEUE_SIZE(l1) + 1) * unit;
 
-	nvkm_error(subdev, "crashcat: wayfinder 0x%08x 0x%016llx: report queue in %s at 0x%llx, 0x%x bytes\n",
-		   l0, l1, r535_gsp_crashcat_aperture(gsp->crashcat.aperture),
-		   offset, gsp->crashcat.size);
+	nvkm_warn(subdev, "crashcat: wayfinder 0x%08x 0x%016llx: report queue in %s at 0x%llx, 0x%x bytes\n",
+		  l0, l1, r535_gsp_crashcat_aperture(gsp->crashcat.aperture),
+		  offset, gsp->crashcat.size);
 
 	switch (gsp->crashcat.aperture) {
 	case NV_CRASHCAT_MEM_APERTURE_EMEM:
@@ -624,10 +639,21 @@ r535_gsp_crashcat_check(struct nvkm_gsp *gsp)
 	return r535_gsp_crashcat_consume(gsp, whole);
 }
 
+const char *
+r535_gsp_crashcat_status(struct nvkm_gsp *gsp)
+{
+	if (gsp->crashcat.disabled)
+		return "CrashCat disabled";
+	if (gsp->crashcat.unusable)
+		return "CrashCat queue unusable";
+	return "no CrashCat report";
+}
+
 void
 r535_gsp_crashcat_reset(struct nvkm_gsp *gsp)
 {
 	gsp->crashcat.valid = false;
 	gsp->crashcat.unusable = false;
+	gsp->crashcat.reported = false;
 	gsp->crashcat.disabled = !nvkm_boolopt(gsp->subdev.device->cfgopt, "NvCrashCat", true);
 }

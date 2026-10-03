@@ -78,6 +78,7 @@ struct drm_gem_object *nouveau_gem_prime_import_sg_table(struct drm_device *dev,
 		goto unlock;
 	}
 
+	nouveau_gem_track(nvbo);
 	obj = &nvbo->bo.base;
 
 unlock:

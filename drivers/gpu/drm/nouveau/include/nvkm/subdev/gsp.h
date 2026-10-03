@@ -214,6 +214,7 @@ struct nvkm_gsp {
 		bool disabled;
 		bool valid;
 		bool unusable;
+		bool reported;
 		u8 aperture;
 		u32 offset;
 		u32 size;

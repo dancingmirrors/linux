@@ -37,6 +37,11 @@ struct nouveau_bo {
 	u64 comp_charged;
 	bool comp_denied;
 
+	bool gem_counted;
+
+	unsigned int fb_refs;
+	unsigned int fb_handle_refs;
+
 	/* GPU address space is independent of CPU word size */
 	uint64_t offset;
 

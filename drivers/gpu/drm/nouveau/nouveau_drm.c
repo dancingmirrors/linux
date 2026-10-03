@@ -34,7 +34,9 @@
 #include <linux/mm.h>
 
 #include <drm/clients/drm_client_setup.h>
+#include <drm/drm_client_event.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_fbdev_ttm.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_ioctl.h>
@@ -119,6 +121,7 @@ static struct drm_driver driver_platform;
 
 static void nouveau_drm_lost_work(struct work_struct *);
 static void nouveau_drm_recover_cancel(struct device *);
+static struct pci_driver nouveau_drm_pci_driver;
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *nouveau_debugfs_root;
@@ -1122,16 +1125,20 @@ nouveau_drm_kill_channels(struct nouveau_drm *drm, bool block)
 #define NOUVEAU_RECOVER_MAX	3		/* re-binds per window */
 #define NOUVEAU_RECOVER_WINDOW	(10 * 60)	/* seconds */
 #define NOUVEAU_RECOVER_DELAY	1000		/* ms */
+#define NOUVEAU_RECOVER_NAG	60		/* deferrals between log lines */
 
 struct nouveau_recover_work {
 	struct delayed_work work;
 	struct device *dev;
+	unsigned int deferred;
+	bool clients_dropped;
 };
 
 struct nouveau_recover_data {
 	struct list_head head;
 	unsigned int count;
 	time64_t first;
+	struct nouveau_recover_work *rw;
 	struct nouveau_recover_work *queued;
 	struct task_struct *task;
 	char name[];
@@ -1174,15 +1181,29 @@ nouveau_recover_get(struct device *dev)
 }
 
 static void
+nouveau_drm_recover_work_free(struct nouveau_recover_work *rw)
+{
+	if (rw->dev)
+		put_device(rw->dev);
+	kfree(rw);
+}
+
+static void
 nouveau_drm_recover_cancel(struct device *dev)
 {
+	struct nouveau_recover_work *rw = NULL;
 	struct nouveau_recover_data *data;
 
 	mutex_lock(&nouveau_recover_lock);
 	data = nouveau_recover_find(dev);
-	if (data)
+	if (data) {
+		rw = data->queued;
 		data->queued = NULL;
+	}
 	mutex_unlock(&nouveau_recover_lock);
+
+	if (rw)
+		cancel_delayed_work_sync(&rw->work);
 }
 
 static void
@@ -1194,9 +1215,145 @@ nouveau_drm_recover_fini(void)
 	while ((data = list_first_entry_or_null(&nouveau_recover_list,
 						typeof(*data), head))) {
 		list_del(&data->head);
+		mutex_unlock(&nouveau_recover_lock);
+
+		if (data->rw) {
+			cancel_delayed_work_sync(&data->rw->work);
+			nouveau_drm_recover_work_free(data->rw);
+		}
 		kfree(data);
+
+		mutex_lock(&nouveau_recover_lock);
 	}
 	mutex_unlock(&nouveau_recover_lock);
+}
+
+static struct nouveau_drm *
+nouveau_drm_recover_drm(struct device *dev)
+{
+	lockdep_assert_held(&dev->mutex);
+
+	if (dev->driver != &nouveau_drm_pci_driver.driver)
+		return NULL;
+
+	return dev_get_drvdata(dev);
+}
+
+static bool
+nouveau_drm_recover_drop_clients(struct device *dev)
+{
+	struct drm_device *ddev = NULL;
+	struct nouveau_drm *drm;
+
+	if (!device_trylock(dev))
+		return false;
+
+	drm = nouveau_drm_recover_drm(dev);
+	if (drm && drm->lost) {
+		ddev = drm->dev;
+		drm_dev_get(ddev);
+	}
+	device_unlock(dev);
+
+	if (ddev) {
+		drm_client_dev_unregister(ddev);
+		drm_dev_put(ddev);
+	}
+
+	return true;
+}
+
+static unsigned int
+nouveau_drm_recover_fb_only(struct nouveau_drm *drm)
+{
+	struct drm_device *dev = drm->dev;
+	struct drm_framebuffer *fb, **fbs;
+	unsigned int nr = 0, fb_only = 0, i, j;
+
+	mutex_lock(&dev->mode_config.fb_lock);
+	fbs = kcalloc(dev->mode_config.num_fb, sizeof(*fbs), GFP_KERNEL);
+	if (fbs) {
+		list_for_each_entry(fb, &dev->mode_config.fb_list, head) {
+			if (nr < dev->mode_config.num_fb &&
+			    kref_get_unless_zero(&fb->base.refcount))
+				fbs[nr++] = fb;
+		}
+	}
+	mutex_unlock(&dev->mode_config.fb_lock);
+
+	if (!fbs)
+		return 0;
+
+	for (i = 0; i < nr; i++) {
+		for (j = 0; j < ARRAY_SIZE(fbs[i]->obj); j++) {
+			struct nouveau_bo *nvbo;
+
+			if (!fbs[i]->obj[j])
+				continue;
+
+			nvbo = nouveau_gem_object(fbs[i]->obj[j]);
+			nvbo->fb_refs++;
+			if (fbs[i]->internal_flags & DRM_FRAMEBUFFER_HAS_HANDLE_REF(j))
+				nvbo->fb_handle_refs++;
+		}
+	}
+
+	for (i = 0; i < nr; i++) {
+		for (j = 0; j < ARRAY_SIZE(fbs[i]->obj); j++) {
+			struct drm_gem_object *obj = fbs[i]->obj[j];
+			struct nouveau_bo *nvbo;
+			unsigned int refs;
+
+			if (!obj)
+				continue;
+
+			nvbo = nouveau_gem_object(obj);
+			if (!nvbo->fb_refs)
+				continue;
+
+			refs = nvbo->fb_refs + (nvbo->fb_handle_refs ? 1 : 0);
+			if (nvbo->gem_counted &&
+			    READ_ONCE(obj->handle_count) == nvbo->fb_handle_refs &&
+			    kref_read(&obj->refcount) == refs)
+				fb_only++;
+
+			nvbo->fb_refs = 0;
+			nvbo->fb_handle_refs = 0;
+		}
+	}
+
+	for (i = 0; i < nr; i++)
+		drm_framebuffer_put(fbs[i]);
+	kfree(fbs);
+
+	return fb_only;
+}
+
+static int
+nouveau_drm_recover_busy(struct device *dev, unsigned int *files,
+			 unsigned int *bos)
+{
+	struct nouveau_drm *drm;
+	unsigned int live, fb_only;
+
+	*files = *bos = 0;
+
+	if (!device_trylock(dev))
+		return -EBUSY;
+
+	drm = nouveau_drm_recover_drm(dev);
+	if (drm) {
+		*files = atomic_read_acquire(&drm->dev->open_count);
+		live = atomic_read_acquire(&drm->gem.live);
+		fb_only = nouveau_drm_recover_fb_only(drm);
+		*bos = live > fb_only ? live - fb_only : 0;
+	}
+	device_unlock(dev);
+
+	if (!drm)
+		return -ENODEV;
+
+	return *files || *bos;
 }
 
 static void
@@ -1206,33 +1363,63 @@ nouveau_drm_recover_work(struct work_struct *work)
 		container_of(work, typeof(*rw), work.work);
 	struct device *dev = rw->dev;
 	struct nouveau_recover_data *data;
+	unsigned int files = 0, bos = 0;
+	int busy = 0;
 	bool go;
 
 	mutex_lock(&nouveau_recover_lock);
 	data = nouveau_recover_find(dev);
 	go = data && data->queued == rw;
+	mutex_unlock(&nouveau_recover_lock);
+
+	if (go) {
+		if (!rw->clients_dropped)
+			rw->clients_dropped = nouveau_drm_recover_drop_clients(dev);
+		busy = nouveau_drm_recover_busy(dev, &files, &bos);
+	}
+
+	mutex_lock(&nouveau_recover_lock);
+	data = nouveau_recover_find(dev);
+	go = data && data->queued == rw;
+	if (go && (busy > 0 || busy == -EBUSY)) {
+		if (!(rw->deferred++ % NOUVEAU_RECOVER_NAG)) {
+			if (busy == -EBUSY)
+				dev_info(dev, "not re-binding yet: the device is locked\n");
+			else
+				dev_info(dev, "not re-binding yet: %u open file(s) and %u buffer(s) are still in use outside the driver\n",
+					 files, bos);
+		}
+		schedule_delayed_work(&rw->work,
+				      msecs_to_jiffies(NOUVEAU_RECOVER_DELAY));
+		mutex_unlock(&nouveau_recover_lock);
+		return;
+	}
 	if (go) {
 		data->queued = NULL;
-		data->task = current;
+		if (busy == -ENODEV)
+			go = false;
+		else
+			data->task = current;
 	}
 	mutex_unlock(&nouveau_recover_lock);
+
+	if (busy == -ENODEV)
+		dev_info(dev, "not re-binding: the device is no longer bound to nouveau\n");
 
 	if (go) {
 		dev_info(dev, "re-binding nouveau to recover the GPU\n");
 
 		if (device_reprobe(dev) || !dev->driver)
 			dev_err(dev, "nouveau: re-bind failed, GPU stays down\n");
-
-		mutex_lock(&nouveau_recover_lock);
-		data = nouveau_recover_find(dev);
-		if (data)
-			data->task = NULL;
-		mutex_unlock(&nouveau_recover_lock);
 	}
 
-	put_device(dev);
-	kfree(rw);
-	module_put(THIS_MODULE);
+	mutex_lock(&nouveau_recover_lock);
+	data = nouveau_recover_find(dev);
+	if (data && data->task == current)
+		data->task = NULL;
+	put_device(rw->dev);
+	rw->dev = NULL;
+	mutex_unlock(&nouveau_recover_lock);
 }
 
 static void
@@ -1268,16 +1455,17 @@ nouveau_drm_recover_schedule(struct nouveau_drm *drm)
 		goto unlock;
 	}
 
-	if (!try_module_get(THIS_MODULE))
-		goto unlock;
-
-	rw = kzalloc_obj(*rw);
-	if (!rw) {
-		module_put(THIS_MODULE);
-		goto unlock;
+	if (data->rw) {
+		nouveau_drm_recover_work_free(data->rw);
+		data->rw = NULL;
 	}
 
+	rw = kzalloc_obj(*rw);
+	if (!rw)
+		goto unlock;
+
 	data->count++;
+	data->rw = rw;
 	data->queued = rw;
 
 	NV_ERROR(drm, "re-binding the driver to recover (attempt %u)\n", data->count);
