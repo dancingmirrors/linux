@@ -1247,13 +1247,20 @@ static long xe_bo_shrink_purge(struct ttm_operation_ctx *ctx,
 static bool
 xe_bo_eviction_valuable(struct ttm_buffer_object *bo, const struct ttm_place *place)
 {
+	struct xe_bo *xe_bo = ttm_to_xe_bo(bo);
 	struct drm_gpuvm_bo *vm_bo;
+	struct xe_tile *tile;
+	u8 id;
 
 	if (!ttm_bo_eviction_valuable(bo, place))
 		return false;
 
 	if (!xe_bo_is_xe_bo(bo))
 		return true;
+
+	for_each_tile(tile, xe_bo_device(xe_bo), id)
+		if (xe_bo->ggtt_node[id])
+			return false;
 
 	drm_gem_for_each_gpuvm_bo(vm_bo, &bo->base) {
 		if (xe_vm_is_validating(gpuvm_to_vm(vm_bo->vm)))
@@ -1740,12 +1747,19 @@ static void xe_ttm_bo_release_notify(struct ttm_buffer_object *ttm_bo)
 
 static void xe_ttm_bo_delete_mem_notify(struct ttm_buffer_object *ttm_bo)
 {
+	struct xe_device *xe = ttm_to_xe_device(ttm_bo->bdev);
 	struct xe_bo *bo = ttm_to_xe_bo(ttm_bo);
+	struct xe_tile *tile;
+	u8 id;
 
 	if (!xe_bo_is_xe_bo(ttm_bo))
 		return;
 
-	if (IS_VF_CCS_READY(ttm_to_xe_device(ttm_bo->bdev)))
+	for_each_tile(tile, xe, id)
+		if (bo->ggtt_node[id])
+			xe_ggtt_remove_bo(tile->mem.ggtt, bo);
+
+	if (IS_VF_CCS_READY(xe))
 		xe_sriov_vf_ccs_detach_bo(bo);
 
 	/*
@@ -1863,8 +1877,9 @@ static void xe_ttm_bo_destroy(struct ttm_buffer_object *ttm_bo)
 
 	xe_assert(xe, list_empty(&ttm_bo->base.gpuva.list));
 
+	/* Should be gone already, see xe_ttm_bo_delete_mem_notify() */
 	for_each_tile(tile, xe, id)
-		if (bo->ggtt_node[id])
+		if (XE_WARN_ON(bo->ggtt_node[id]))
 			xe_ggtt_remove_bo(tile->mem.ggtt, bo);
 
 #ifdef CONFIG_PROC_FS

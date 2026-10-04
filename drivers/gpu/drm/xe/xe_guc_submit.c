@@ -3266,6 +3266,7 @@ int xe_guc_error_capture_handler(struct xe_guc *guc, u32 *msg, u32 len)
 int xe_guc_exec_queue_memory_cat_error_handler(struct xe_guc *guc, u32 *msg,
 					       u32 len)
 {
+	struct xe_device *xe = guc_to_xe(guc);
 	struct xe_gt *gt = guc_to_gt(guc);
 	struct xe_exec_queue *q;
 	u32 guc_id;
@@ -3294,8 +3295,11 @@ int xe_guc_exec_queue_memory_cat_error_handler(struct xe_guc *guc, u32 *msg,
 	}
 
 	q = xa_load(&guc->submission_state.exec_queue_lookup, guc_id);
-	if (unlikely(!q)) {
+	if (unlikely(!q || !exec_queue_registered(q))) {
 		xe_gt_err_ratelimited(gt, "Memory CAT error for unknown guc_id=%u\n", guc_id);
+		if (!IS_SRIOV_VF(xe) &&
+		    xe->wedged.mode != XE_WEDGED_MODE_UPON_ANY_HANG_NO_RESET)
+			xe_gt_reset_async(gt);
 		return 0;
 	}
 
