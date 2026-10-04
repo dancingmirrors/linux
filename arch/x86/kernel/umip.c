@@ -375,10 +375,9 @@ bool fixup_umip_exception(struct pt_regs *regs)
 	if (umip_inst < 0)
 		return false;
 
-	umip_pr_debug(regs, "%s instruction cannot be used by applications.\n",
-			umip_insns[umip_inst]);
-
-	umip_pr_debug(regs, "For now, expensive software emulation returns the result.\n");
+	if (!test_and_set_bit(MM_CONTEXT_UMIP_REPORTED, &current->mm->context.flags))
+		umip_pr_debug(regs, "%s instruction cannot be used by applications. For now, expensive software emulation returns the result. Not reporting further emulation for this process.\n",
+			      umip_insns[umip_inst]);
 
 	if (emulate_umip_insn(&insn, umip_inst, dummy_data, &dummy_data_size,
 			      user_64bit_mode(regs)))
