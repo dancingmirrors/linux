@@ -488,7 +488,8 @@ do_install() {
 	fi
 
 	echo "=> install $kv -> $destdir${priv:+ (via $priv)}"
-	$priv chimera-buildkernel install "$destdir"
+	$priv env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+		GIT_CONFIG_VALUE_0="$srcdir" chimera-buildkernel install "$destdir"
 
 	if [ "$destdir" = "/" ] && [ "$runhooks" = 1 ]; then
 		refresh_initramfs "$kv"
@@ -500,6 +501,12 @@ do_install() {
 	[ -n "$_bn" ] && echo "Build: $_bn"
 	if [ "$destdir" = "/" ]; then
 		echo "Modules: /usr/lib/modules/$kv"
+	fi
+
+	_hkv=$(cat "$hdrdir/include/config/kernel.release" 2>/dev/null) || _hkv=
+	if [ "$_hkv" != "$kv" ]; then
+		echo "=> WARNING: $hdrdir has release '$_hkv', not '$kv';" >&2
+		echo "   out-of-tree modules built against it will install to the wrong place" >&2
 	fi
 }
 
