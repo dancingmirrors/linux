@@ -217,6 +217,8 @@ ifneq ($(words $(subst :, ,$(abs_srctree))), 1)
 $(error source directory cannot contain spaces or colons)
 endif
 
+include $(abs_srctree)/scripts/chimera/Makefile.host
+
 export sub_make_done := 1
 
 endif # sub_make_done
@@ -247,6 +249,7 @@ $(filter-out $(this-makefile), $(MAKECMDGOALS)) __all: __sub-make
 __sub-make:
 	$(Q)$(MAKE) $(no-print-directory) -C $(abs_output) \
 	-f $(abs_srctree)/Makefile $(MAKECMDGOALS)
+	$(ccache-report)
 
 else # need-sub-make
 
@@ -1314,6 +1317,13 @@ export KBUILD_IMAGE ?= vmlinux
 # images. Default is /boot, but you can set it to other values
 export	INSTALL_PATH ?= /boot
 
+ifneq ($(wildcard /usr/lib/base-kernel),)
+export INSTALL_MOD_STRIP ?= 1
+export INSTALL_MOD_BUILD ?= $(if $(KERNELRELEASE),/usr/src/linux-headers-$(KERNELRELEASE))
+export INSTALL_DTBS_PATH ?= $(INSTALL_PATH)/dtbs/dtbs-$(KERNELRELEASE)
+modules_install: export ZSTD_CLEVEL ?= 9
+endif
+
 #
 # INSTALL_DTBS_PATH specifies a prefix for relocations required by build roots.
 # Like INSTALL_MOD_PATH, it isn't defined in the Makefile, but can be passed as
@@ -1623,17 +1633,13 @@ ifneq ($(wildcard $(bootconfig_O)),)
 	$(Q)$(MAKE) -sC $(srctree)/tools/bootconfig O=$(bootconfig_O) clean
 endif
 
-ifeq ($(quiet),silent_)
-tools_silent=s
-endif
-
 tools/: FORCE
 	$(Q)mkdir -p $(objtree)/tools
-	$(Q)$(MAKE) MAKEFLAGS="$(tools_silent) $(filter --j% -j,$(MAKEFLAGS))" O=$(abspath $(objtree)) subdir=tools -C $(srctree)/tools/
+	$(Q)$(MAKE) O=$(abspath $(objtree)) subdir=tools -C $(srctree)/tools/
 
 tools/%: FORCE
 	$(Q)mkdir -p $(objtree)/tools
-	$(Q)$(MAKE) MAKEFLAGS="$(tools_silent) $(filter --j% -j,$(MAKEFLAGS))" O=$(abspath $(objtree)) subdir=tools -C $(srctree)/tools/ $*
+	$(Q)$(MAKE) O=$(abspath $(objtree)) subdir=tools -C $(srctree)/tools/ $*
 
 # ---------------------------------------------------------------------------
 # Kernel selftest

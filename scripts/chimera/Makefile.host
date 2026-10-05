@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+ifeq ($(origin LLVM),undefined)
+ifneq ($(findstring clang,$(shell cc --version 2>/dev/null)),)
+export LLVM := 1
+else ifeq ($(shell command -v $(CROSS_COMPILE)gcc 2>/dev/null),)
+ifneq ($(shell command -v clang 2>/dev/null),)
+export LLVM := 1
+endif
+endif
+endif
+
+ifeq ($(shell sed --version 2>/dev/null),)
+host-path := $(abs_srctree)/scripts/chimera/gnu
+endif
+
+ifeq ($(filter 0 n no off,$(CCACHE)),)
+ccache-dir := $(firstword $(foreach d, /usr/lib/ccache/bin /usr/lib64/ccache /usr/lib/ccache, \
+		$(if $(wildcard $(d)/clang $(d)/gcc),$(d))))
+ifneq ($(filter 1 y yes on,$(CCACHE)),)
+ifeq ($(ccache-dir),)
+$(error CCACHE=$(CCACHE), but no ccache masquerade directory was found)
+endif
+endif
+host-path += $(ccache-dir)
+endif
+
+host-path := $(filter-out $(subst :, ,$(PATH)),$(host-path))
+ifneq ($(host-path),)
+export PATH := $(subst : ,:,$(addsuffix :,$(host-path)))$(PATH)
+endif
+
+ifneq ($(ccache-dir),)
+ifneq ($(quiet),silent_)
+ifeq ($(filter %config,$(MAKECMDGOALS)),)
+ccache-stats = ccache --print-stats 2>/dev/null | awk '\
+	$$1 == "direct_cache_hit" || $$1 == "preprocessed_cache_hit" { h += $$2 } \
+	$$1 == "cache_miss" { m += $$2 } \
+	END { print h + 0, m + 0 }'
+ccache-before := $(shell $(ccache-stats))
+ccache-report = @$(ccache-stats) | awk -v before="$(ccache-before)" '{ \
+	split(before, b); h = $$1 - b[1]; m = $$2 - b[2]; \
+	if (h + m > 0) printf "ccache: %d hits, %d misses\n", h, m }'
+endif
+endif
+endif

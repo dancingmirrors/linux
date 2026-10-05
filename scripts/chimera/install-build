@@ -1,0 +1,44 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+set -eu
+
+dest=$1
+
+case $dest in
+''|/)
+	echo >&2 "install-build: refusing to install to '$dest'"
+	exit 1
+	;;
+esac
+
+rm -rf "$dest"
+"$srctree/scripts/package/install-extmod-build" "$dest"
+
+if [ "$(id -u)" = 0 ]; then
+	chown -R 0:0 "$dest"
+fi
+
+install -m 644 "${KCONFIG_CONFIG:-.config}" "$dest/.config"
+install -m 644 System.map "$dest/System.map"
+
+if grep -q '^CONFIG_MODULE_SIG=y$' include/config/auto.conf &&
+   [ -f certs/signing_key.x509 ]; then
+	mkdir -p "$dest/certs"
+	install -m 644 certs/signing_key.x509 "$dest/certs/"
+	key=$(sed -n 's/^CONFIG_MODULE_SIG_KEY=//p' include/config/auto.conf)
+	key=${key#\"}
+	key=${key%\"}
+	case $key in
+	''|/*|pkcs11:*)
+		;;
+	*)
+		if [ -f "$key" ]; then
+			case $key in
+			*/*) mkdir -p "$dest/${key%/*}" ;;
+			esac
+			install -m 600 "$key" "$dest/$key"
+		fi
+		;;
+	esac
+fi

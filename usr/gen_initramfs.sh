@@ -143,6 +143,14 @@ header() {
 	printf "\n#####################\n# $1\n" >> $cpio_list
 }
 
+date_to_epoch() {
+	if date -j +%s >/dev/null 2>&1; then
+		LC_ALL=C date -j -u -f '%a %b %e %H:%M:%S UTC %Y' "$1" +%s
+	else
+		date -d"$1" +%s
+	fi
+}
+
 # process one directory (incl sub-directories)
 dir_filelist() {
 	header "$1"
@@ -222,7 +230,7 @@ while [ $# -gt 0 ]; do
 			shift
 			;;
 		"-d")	# date for file mtimes
-			timestamp="$(date -j -f "%a %b %e %H:%M:%S UTC %Y" "$1" +%s || :)"
+			timestamp="$(date_to_epoch "$1" || :)"
 			if test -n "$timestamp"; then
 				timestamp="-t $timestamp"
 			fi

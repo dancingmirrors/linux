@@ -199,9 +199,10 @@ filechk_kheaders_srclist = \
 $(obj)/kheaders-srclist: FORCE
 	$(call filechk,kheaders_srclist)
 
-# Some files are symlinks. If symlinks are changed, kheaders_data.tar.xz should
-# be rebuilt.
-filechk_kheaders_md5sum = xargs -r -a $< stat -c %N | md5sum
+filechk_kheaders_md5sum = \
+	while read -r f; do \
+		if [ -L "$$f" ]; then echo "$$f -> $$(readlink "$$f")"; else echo "$$f"; fi; \
+	done < $< | md5sum
 
 $(obj)/kheaders.md5: $(obj)/kheaders-srclist FORCE
 	$(call filechk,kheaders_md5sum)

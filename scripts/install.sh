@@ -24,9 +24,15 @@ if [ -n "${INSTALL_PATH}" ] && ! [ -e "${INSTALL_PATH}" ]; then
 	mkdir -p "${INSTALL_PATH}"
 fi
 
+chimera=
+if [ -x /usr/lib/base-kernel/run-kernel-d ]; then
+	chimera="${srctree}/scripts/chimera/installkernel"
+fi
+
 # User/arch may have a custom install script
 for file in "${HOME}/bin/${INSTALLKERNEL}"		\
 	    "/sbin/${INSTALLKERNEL}"			\
+	    ${chimera:+"${chimera}"}			\
 	    "${srctree}/arch/${SRCARCH}/install.sh"	\
 	    "${srctree}/arch/${SRCARCH}/boot/install.sh"
 do

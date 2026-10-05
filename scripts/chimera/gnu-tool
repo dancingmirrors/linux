@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+name=${0##*/}
+
+if command -v "g$name" >/dev/null 2>&1; then
+	exec "g$name" "$@"
+fi
+
+self=${0%/*}
+path=
+rest=$PATH:
+while [ -n "$rest" ]; do
+	dir=${rest%%:*}
+	rest=${rest#*:}
+	[ "$dir" = "$self" ] || path=$path${path:+:}$dir
+done
+PATH=$path
+export PATH
+exec "$name" "$@"

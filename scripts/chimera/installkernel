@@ -1,0 +1,72 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Arguments, as for installkernel(8):
+#   $1 - kernel version
+#   $2 - kernel image file
+#   $3 - kernel map file
+#   $4 - default install path (blank if root directory)
+
+set -eu
+
+version=$1
+image=$2
+map=$3
+dir=${4:-/}
+
+case ${image##*/} in
+Image|vmlinux|vmlinux.efi)
+	name=vmlinux
+	;;
+*)
+	name=vmlinuz
+	;;
+esac
+
+mkdir -p "$dir"
+install -m 644 "$image" "$dir/$name-$version"
+install -m 644 "$map" "$dir/System.map-$version"
+install -m 644 "${KCONFIG_CONFIG:-.config}" "$dir/config-$version"
+
+if [ -n "${INSTALL_MOD_PATH-}" ] ||
+   [ "$(cd "$dir" && pwd -P)" != "$(cd /boot && pwd -P)" ]; then
+	exit 0
+fi
+
+modules=/usr/lib/modules/$version
+if grep -q '^CONFIG_MODULES=y$' include/config/auto.conf &&
+   [ ! -f "$modules/modules.order" ]; then
+	echo >&2 "installkernel: no modules in $modules; run 'make modules_install'"
+	echo >&2 "installkernel: before 'make install', which needs them for the initramfs"
+	exit 1
+fi
+
+path=
+rest=$PATH:
+while [ -n "$rest" ]; do
+	entry=${rest%%:*}
+	rest=${rest#*:}
+	case $entry in
+	*/scripts/chimera/gnu|*/ccache|*/ccache/bin)
+		continue
+		;;
+	esac
+	path=$path${path:+:}$entry
+done
+PATH=$path
+export PATH
+
+rm -f "/boot/initrd.img-$version" "/boot/initramfs-$version.img"
+
+/usr/lib/base-kernel/run-kernel-d
+
+if [ ! -f "/boot/initrd.img-$version" ] && command -v update-initramfs >/dev/null; then
+	echo >&2 "installkernel: the hooks made no initramfs, running update-initramfs"
+	if ! update-initramfs -c -k "$version"; then
+		echo >&2 "installkernel: update-initramfs failed: do not reboot into $version yet"
+		exit 1
+	fi
+fi
+
+build=$(sed -n 's/.*UTS_VERSION "\(#[0-9]*\).*/\1/p' include/generated/utsversion.h 2>/dev/null) || :
+echo "Installed $version${build:+ (build $build)}: $dir/$name-$version, modules in $modules"

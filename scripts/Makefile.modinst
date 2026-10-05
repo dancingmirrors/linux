@@ -19,10 +19,14 @@ $(shell rm -fr $(MODLIB)/kernel $(MODLIB)/build)
 install-$(CONFIG_MODULES) += $(addprefix $(MODLIB)/, build modules.order)
 
 $(MODLIB)/build: FORCE
+	$(if $(INSTALL_MOD_BUILD),$(call cmd,install_build))
 	$(call cmd,symlink)
 
+quiet_cmd_install_build = INSTALL $(INSTALL_MOD_PATH)$(INSTALL_MOD_BUILD)
+      cmd_install_build = $(srctree)/scripts/chimera/install-build $(INSTALL_MOD_PATH)$(INSTALL_MOD_BUILD)
+
 quiet_cmd_symlink = SYMLINK $@
-      cmd_symlink = ln -s $(CURDIR) $@
+      cmd_symlink = ln -s $(or $(INSTALL_MOD_BUILD),$(CURDIR)) $@
 
 $(MODLIB)/modules.order: modules.order FORCE
 	$(call cmd,install_modorder)
