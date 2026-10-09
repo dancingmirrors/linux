@@ -116,7 +116,8 @@ int pcie_failed_link_retrain(struct pci_dev *dev)
 	}
 
 	pcie_capability_read_word(dev, PCI_EXP_LNKCTL2, &lnkctl2);
-	if ((lnkctl2 & PCI_EXP_LNKCTL2_TLS) == PCI_EXP_LNKCTL2_TLS_2_5GT) {
+	if ((lnkctl2 & PCI_EXP_LNKCTL2_TLS) == PCI_EXP_LNKCTL2_TLS_2_5GT &&
+	    (!ret || (lnksta & PCI_EXP_LNKSTA_DLLLA))) {
 		pci_info(dev, "removing 2.5GT/s downstream link speed restriction\n");
 		ret = pcie_set_target_speed(dev, speed_cap, false);
 		if (ret)
