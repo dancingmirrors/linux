@@ -1443,6 +1443,8 @@ delete_queue_group:
 	if (xe_exec_queue_is_multi_queue_secondary(q))
 		xe_exec_queue_group_delete(xe, q);
 put_exec_queue:
+	if (q->xef)
+		atomic_inc(&xef->exec_queue.pending_removal);
 	xe_exec_queue_put(q);
 	return err;
 }
